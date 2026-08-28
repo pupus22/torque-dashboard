@@ -2,10 +2,53 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.4.0 FOLLOW';
+var APP_VERSION = 'GitHub Firebase v1.5.0 FRIENDLY PID';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
+
+var FRIENDLY_PID = {
+  'kc':       {name:'Putaran Mesin (RPM)',short:'RPM',unit:'rpm',defaultCard:true,sort:10},
+  'k5':       {name:'Suhu Mesin (Coolant)',short:'Suhu Mesin',unit:'°C',defaultCard:true,sort:20},
+  'kd':       {name:'Kecepatan Mobil (OBD)',short:'Kecepatan',unit:'km/h',defaultCard:true,sort:30},
+  'k4':       {name:'Beban Mesin',short:'Beban Mesin',unit:'%',sort:40},
+  'kb':       {name:'Tekanan Intake (MAP)',short:'MAP',unit:'',sort:50},
+  'k10':      {name:'Aliran Udara (MAF)',short:'MAF',unit:'g/s',sort:60},
+  'k11':      {name:'Bukaan Gas',short:'Bukaan Gas',unit:'%',sort:70},
+  'ke':       {name:'Timing Pengapian',short:'Timing',unit:'°',sort:80},
+  'kf':       {name:'Suhu Udara Masuk',short:'Suhu Intake',unit:'°C',sort:90},
+  'k42':      {name:'Tegangan ECU',short:'Tegangan ECU',unit:'V',defaultCard:true,sort:100},
+  'kff1238':  {name:'Tegangan Adapter OBD',short:'Tegangan OBD',unit:'V',sort:110},
+  'kff1214':  {name:'Sensor Oksigen 1',short:'O2 Sensor 1',unit:'V',sort:120},
+  'kff1215':  {name:'Sensor Oksigen 2',short:'O2 Sensor 2',unit:'V',sort:130},
+  'kff1203':  {name:'Konsumsi Instan (KPL)',short:'KPL Instan',unit:'km/L',defaultCard:true,sort:140},
+  'kff1206':  {name:'Rata-rata Trip (KPL)',short:'Trip KPL',unit:'km/L',defaultCard:true,sort:150},
+  'kff1204':  {name:'Jarak Perjalanan',short:'Jarak Trip',unit:'km',sort:160},
+  'kff125d':  {name:'Pemakaian BBM / Jam',short:'Fuel Flow',unit:'',sort:170},
+  'kff1001':  {name:'Kecepatan GPS',short:'Kecepatan GPS',unit:'km/h',sort:180},
+  'kff1005':  {name:'Longitude',short:'Longitude',unit:'°',sort:190},
+  'kff1006':  {name:'Latitude',short:'Latitude',unit:'°',sort:200},
+  'kff1239':  {name:'Akurasi GPS',short:'Akurasi GPS',unit:'m',sort:210},
+  'kff1007':  {name:'Arah Kendaraan',short:'Arah GPS',unit:'°',sort:220},
+  'k44':      {name:'Target Lambda',short:'Lambda Target',unit:'',sort:230},
+  'kff1202':  {name:'Boost / Vakum',short:'Boost / Vakum',unit:'',sort:240},
+  'kff124d':  {name:'AFR Target',short:'AFR Target',unit:':1',sort:250},
+  'kff126a':  {name:'Estimasi Jarak Sisa BBM',short:'Jarak Sisa BBM',unit:'km',sort:260},
+
+  // Extended / GM PID yang sudah teridentifikasi dari metadata Torque.
+  'k221141':  {name:'Tegangan Pengapian 1',short:'Ignition V',unit:'V',sort:310},
+  'k2212c3':  {name:'Durasi Injektor Bank 1',short:'Injector PWM',unit:'ms',sort:320},
+  'k221564':  {name:'Tekanan AC Sisi Tinggi',short:'Tekanan AC',unit:'psi',sort:330},
+  'k221942':  {name:'Putaran Output Transmisi',short:'Output Transmisi',unit:'RPM',sort:340},
+  'k221145':  {name:'Sensor Oksigen H2OS',short:'H2OS',unit:'mV',sort:350}
+};
+
+function looksLikeRawPidLabel(label,key){
+  var s=text(label).trim().toLowerCase();
+  var k=text(key).trim().toLowerCase();
+  return !s || s===k || /^k(?:ff)?[0-9a-f]+$/i.test(s);
+}
+
 
 var S = {
   auth:null,
@@ -346,7 +389,42 @@ function defaultGraphKeys(){
 }
 function isPidKey(k){ return /^k/i.test(k) && k.indexOf('kff1005')!==0 && k.indexOf('kff1006')!==0; }
 function metaFor(k){
-  return S.catalog[k] || {key:k,name:k,short:k,unit:'',precision:null,freshness:null,min:null,max:null,sort:9999};
+  var c=S.catalog[k]||null;
+  var f=FRIENDLY_PID[k]||null;
+
+  if(!c && f){
+    return {
+      key:k,
+      name:f.name,
+      short:f.short||f.name,
+      unit:f.unit||'',
+      precision:null,
+      freshness:null,
+      min:null,
+      max:null,
+      defaultCard:!!f.defaultCard,
+      sort:f.sort||9999
+    };
+  }
+
+  if(c){
+    // Catalog Firebase tetap sumber utama, tetapi jika nama catalog masih hanya
+    // berupa kode PID mentah, pakai nama ramah yang sudah kita kurasi.
+    return {
+      key:k,
+      name:(f && looksLikeRawPidLabel(c.name,k)) ? f.name : (c.name||f&&f.name||k),
+      short:(f && looksLikeRawPidLabel(c.short,k)) ? (f.short||f.name) : (c.short||f&&f.short||c.name||k),
+      unit:c.unit || (f&&f.unit) || '',
+      precision:c.precision,
+      freshness:c.freshness,
+      min:c.min,
+      max:c.max,
+      defaultCard:!!c.defaultCard || !!(f&&f.defaultCard),
+      sort:(c.sort && c.sort!==9999) ? c.sort : ((f&&f.sort)||9999)
+    };
+  }
+
+  return {key:k,name:k,short:k,unit:'',precision:null,freshness:null,min:null,max:null,defaultCard:false,sort:9999};
 }
 function validPidValue(k,v){
   var n=num(v); if(n===null) return null;
