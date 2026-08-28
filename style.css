@@ -177,3 +177,67 @@ dialog::backdrop{background:rgba(0,0,0,.62)}
 @media (max-width:720px){
   .map{height:310px}
 }
+
+
+/* ================= LIVE FOLLOW v1.4 ================= */
+.map-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.follow-btn{
+  min-width:150px;
+}
+.follow-btn.active-follow{
+  background:#dcecff;
+  color:#07101a;
+  border-color:#dcecff;
+}
+.follow-btn.paused-follow{
+  background:var(--panel2);
+  color:var(--text);
+  border-color:var(--line);
+}
+.live-vehicle-marker{
+  width:34px;
+  height:34px;
+  position:relative;
+  display:grid;
+  place-items:center;
+  pointer-events:none;
+}
+.vehicle-dot{
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:#1677ff;
+  border:3px solid #fff;
+  box-shadow:0 2px 8px rgba(0,0,0,.55);
+  z-index:2;
+}
+.vehicle-pulse{
+  position:absolute;
+  width:30px;
+  height:30px;
+  border-radius:50%;
+  background:rgba(22,119,255,.23);
+  animation:torquePulse 1.8s ease-out infinite;
+}
+@keyframes torquePulse{
+  0%{transform:scale(.6);opacity:.85}
+  75%,100%{transform:scale(1.45);opacity:0}
+}
+@media (max-width:720px){
+  .map-actions{
+    width:100%;
+    justify-content:stretch;
+  }
+  .map-actions .follow-btn,
+  .map-actions .link-btn{
+    flex:1;
+    justify-content:center;
+    text-align:center;
+  }
+}

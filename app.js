@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.3.0';
+var APP_VERSION = 'GitHub Firebase v1.4.0 FOLLOW';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -34,6 +34,10 @@ var S = {
   mapReady:{live:false, history:false},
   routeData:{live:null, history:null},
   traceMarkers:{live:null, history:null},
+  vehicleMarker:null,
+  liveFollow:true,
+  liveFollowZoom:16,
+  latestLiveGps:null,
   mapResizeObservers:{live:null, history:null},
   telemetryCache:{},
   timers:{live:null, freshness:null},
@@ -278,6 +282,9 @@ async function selectVehicle(id){
   S.deviceId=id||'';
   S.live=null; S.liveTrace=null; S.historySession=null; S.historyTelemetry=null;
   S.historySessions={};
+  S.liveFollow=true;
+  S.latestLiveGps=null;
+  updateFollowButton();
   hide('liveTracePanel'); hide('historyDetail');
   if(!id){ setEmpty('Pilih kendaraan untuk menampilkan data.'); return; }
 
@@ -319,6 +326,10 @@ function renderLive(){
   if(!S.cardKeys.length) S.cardKeys=defaultCardKeys(pids);
   renderSensorCards($('liveCards'),pids,pt,S.cardKeys);
   renderSensorTable(pids,pt);
+
+  // Posisi kendaraan LIVE berasal langsung dari LIVE_STATE, jadi marker bisa
+  // bergerak tanpa menunggu graph/telemetry dimuat ulang.
+  updateLiveVehicleFromState(l);
 }
 function defaultCardKeys(pids){
   var keys=Object.keys(S.catalog).filter(function(k){ return S.catalog[k].defaultCard && pids[k] !== undefined; });
@@ -628,6 +639,105 @@ async function traceHistoryAt(target){
   if(!p){toast('Tidak ada telemetry di sekitar waktu ini');return;}
   renderTrace('history',p);
 }
+/* =========================== LIVE MAP FOLLOW =========================== */
+
+function liveGpsFromState(live){
+  live=live||{};
+  var lat=num(live.GPS_LAT), lon=num(live.GPS_LON), acc=num(live.GPS_ACCURACY);
+  if(lat===null||lon===null||lat===0||lon===0)return null;
+  var maxAcc=num(S.config.MAX_GPS_ACCURACY_M)||80;
+  if(acc!==null&&acc>maxAcc)return null;
+  return {
+    lat:lat,
+    lon:lon,
+    acc:acc,
+    bearing:num(live.GPS_BEARING),
+    speed:num(live.GPS_SPEED),
+    time:ms(live.GPS_TIME||live.LAST_TORQUE_TIME||live.LAST_RECEIVED)
+  };
+}
+function updateFollowButton(){
+  var b=$('liveFollowBtn');
+  if(!b)return;
+  if(S.liveFollow){
+    b.textContent='● Ikuti Kendaraan';
+    b.classList.add('active-follow');
+    b.classList.remove('paused-follow');
+    b.title='Peta otomatis mengikuti posisi GPS terbaru';
+  }else{
+    b.textContent='○ Ikuti Kendaraan';
+    b.classList.remove('active-follow');
+    b.classList.add('paused-follow');
+    b.title='Klik untuk kembali mengikuti kendaraan';
+  }
+}
+function setLiveFollow(enabled, recenter){
+  S.liveFollow=!!enabled;
+  updateFollowButton();
+
+  if(S.liveFollow){
+    // TRACE selesai saat kembali ke mode follow LIVE.
+    if(S.traceMarkers.live){
+      S.traceMarkers.live.remove();
+      S.traceMarkers.live=null;
+    }
+    if(recenter!==false) centerOnLiveVehicle(true);
+  }
+}
+function ensureVehicleMarker(g){
+  if(!g||typeof maplibregl==='undefined')return;
+  var m=ensureMap('live');
+  if(!m)return;
+
+  if(!S.vehicleMarker){
+    var el=document.createElement('div');
+    el.className='live-vehicle-marker';
+    el.innerHTML='<span class="vehicle-pulse"></span><span class="vehicle-dot"></span>';
+    S.vehicleMarker=new maplibregl.Marker({
+      element:el,
+      anchor:'center',
+      rotationAlignment:'map',
+      pitchAlignment:'map'
+    }).setLngLat([g.lon,g.lat]).addTo(m);
+  }else{
+    S.vehicleMarker.setLngLat([g.lon,g.lat]);
+  }
+}
+function centerOnLiveVehicle(forceZoom){
+  var g=S.latestLiveGps;
+  var m=S.maps.live;
+  if(!g||!m||!S.mapReady.live)return;
+
+  var targetZoom=m.getZoom();
+  if(forceZoom || !isFinite(targetZoom) || targetZoom<14){
+    targetZoom=S.liveFollowZoom;
+  }
+
+  m.easeTo({
+    center:[g.lon,g.lat],
+    zoom:targetZoom,
+    duration:350,
+    essential:true
+  });
+}
+function updateLiveVehicleFromState(live){
+  var g=liveGpsFromState(live);
+  if(!g)return;
+  S.latestLiveGps=g;
+
+  var link=$('liveMapsLink');
+  if(link){
+    link.href='https://www.google.com/maps?q='+g.lat+','+g.lon;
+    show('liveMapsLink');
+  }
+
+  // Map dibuat lazy; bila sudah ada, marker kendaraan langsung diperbarui.
+  if(S.maps.live && S.mapReady.live){
+    ensureVehicleMarker(g);
+    if(S.liveFollow && !S.liveTrace) centerOnLiveVehicle(false);
+  }
+}
+
 /* =========================== MAP =========================== */
 /*
  * MapLibre GL JS + OpenFreeMap
@@ -678,8 +788,30 @@ function ensureMap(context){
   m.on('load',function(){
     S.mapReady[context]=true;
     if(S.routeData[context])applyRouteToMap(context,S.routeData[context]);
+
+    if(context==='live' && S.latestLiveGps){
+      ensureVehicleMarker(S.latestLiveGps);
+      if(S.liveFollow && !S.liveTrace){
+        setTimeout(function(){centerOnLiveVehicle(true);},80);
+      }
+    }
+
     setTimeout(function(){m.resize();},50);
   });
+
+  if(context==='live'){
+    // Pengguna menggeser / zoom manual -> pause follow otomatis.
+    // Klik tombol Ikuti Kendaraan untuk kembali ke posisi mobil.
+    m.on('dragstart',function(){
+      if(S.liveFollow)setLiveFollow(false,false);
+    });
+    m.on('zoomstart',function(e){
+      if(S.liveFollow && e && e.originalEvent)setLiveFollow(false,false);
+    });
+    m.on('rotatestart',function(){
+      if(S.liveFollow)setLiveFollow(false,false);
+    });
+  }
 
   m.on('click',function(e){
     var packets=mapPacketsForContext(context);
@@ -737,7 +869,12 @@ function applyRouteToMap(context,route){
 
   var bounds=new maplibregl.LngLatBounds();
   route.coords.forEach(function(c){bounds.extend(c);});
-  if(!bounds.isEmpty()){
+
+  if(context==='live' && S.liveFollow && S.latestLiveGps && !S.liveTrace){
+    ensureVehicleMarker(S.latestLiveGps);
+    centerOnLiveVehicle(false);
+  }else if(!bounds.isEmpty()){
+    // Saat follow OFF atau pada Riwayat, tampilkan seluruh route/range.
     m.fitBounds(bounds,{padding:38,maxZoom:17,duration:0});
   }
   setTimeout(function(){m.resize();},80);
@@ -770,10 +907,23 @@ function renderMap(context,packets,from,to){
   link.href='https://www.google.com/maps?q='+lastPoint.lat+','+lastPoint.lon;
   show(context==='live'?'liveMapsLink':'historyMapsLink');
 
-  if(S.mapReady[context])applyRouteToMap(context,S.routeData[context]);
+  if(S.mapReady[context]){
+    applyRouteToMap(context,S.routeData[context]);
+    if(context==='live' && S.latestLiveGps){
+      ensureVehicleMarker(S.latestLiveGps);
+      if(S.liveFollow && !S.liveTrace) centerOnLiveVehicle(false);
+    }
+  }
 }
 function setTraceMarker(context,g){
   if(!g||typeof maplibregl==='undefined')return;
+
+  if(context==='live'){
+    // TRACE berarti pengguna sedang melihat waktu historis, jadi jangan
+    // memaksa kamera kembali ke kendaraan LIVE.
+    setLiveFollow(false,false);
+  }
+
   var m=ensureMap(context);
   if(!m)return;
 
@@ -941,7 +1091,12 @@ function showTab(tab){
   hide('emptyPanel');
   if(tab==='live'){
     show('livePanel');hide('historyPanel');
-    setTimeout(function(){if(S.maps.live)S.maps.live.resize();},80);
+    setTimeout(function(){
+      if(S.maps.live){
+        S.maps.live.resize();
+        if(S.liveFollow && !S.liveTrace)centerOnLiveVehicle(false);
+      }
+    },80);
   }else{
     hide('livePanel');show('historyPanel');
     setTimeout(function(){if(S.maps.history)S.maps.history.resize();},80);
@@ -984,6 +1139,15 @@ function bind(){
 
   $('livePidChecks').addEventListener('change',function(e){if(e.target.matches('input[type=checkbox]'))handlePidCheck('live',e.target);});
   $('historyPidChecks').addEventListener('change',function(e){if(e.target.matches('input[type=checkbox]'))handlePidCheck('history',e.target);});
+  $('liveFollowBtn').addEventListener('click',function(){
+    if(S.liveFollow){
+      setLiveFollow(false,false);
+    }else{
+      S.liveTrace=null;
+      hide('liveTracePanel');
+      setLiveFollow(true,true);
+    }
+  });
   $('graphRefreshBtn').addEventListener('click',loadLiveGraph);
   $('historyGraphRefreshBtn').addEventListener('click',function(){loadHistoryGraph(true);});
   $('normalizeLive').addEventListener('change',loadLiveGraph);
@@ -1015,7 +1179,12 @@ function bind(){
     S.historyCustom={from:f,to:t};S.historyRange='custom';loadHistoryGraph();
   });
 
-  $('backToNowBtn').addEventListener('click',function(){S.liveTrace=null;hide('liveTracePanel');loadLiveGraph();});
+  $('backToNowBtn').addEventListener('click',function(){
+    S.liveTrace=null;
+    hide('liveTracePanel');
+    setLiveFollow(true,true);
+    loadLiveGraph();
+  });
   $('resetHistoryRange').addEventListener('click',function(){S.historyRange='whole';S.historyTrace=null;hide('historyTracePanel');loadHistoryGraph();});
 
   $('historyRefreshBtn').addEventListener('click',function(){loadHistory(true);});
