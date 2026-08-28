@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.2.0 CLEAN';
+var APP_VERSION = 'GitHub Firebase v1.3.0';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -31,8 +31,8 @@ var S = {
   historyTrace:null,
   charts:{live:null, history:null},
   maps:{live:null, history:null},
-  tileLayers:{live:null, history:null},
-  mapLayers:{live:null, history:null},
+  mapReady:{live:false, history:false},
+  routeData:{live:null, history:null},
   traceMarkers:{live:null, history:null},
   mapResizeObservers:{live:null, history:null},
   telemetryCache:{},
@@ -629,148 +629,169 @@ async function traceHistoryAt(target){
   renderTrace('history',p);
 }
 /* =========================== MAP =========================== */
-
+/*
+ * MapLibre GL JS + OpenFreeMap
+ * - Gratis
+ * - Tanpa API key
+ * - Vector map, bukan raster tile Leaflet
+ * - Style: Liberty
+ */
+function mapPacketsForContext(context){
+  if(context==='live'){
+    if(!S.live)return [];
+    return S.telemetryCache[S.deviceId+'|'+text(S.live.SESSION_ID)]||[];
+  }
+  return S.historyTelemetry||[];
+}
+function routeIds(context){
+  return {
+    source:'torque-route-source-'+context,
+    layer:'torque-route-layer-'+context
+  };
+}
 function mapElementVisible(context){
   var el=$(context==='live'?'liveMap':'historyMap');
-  if(!el) return false;
+  if(!el)return false;
   var r=el.getBoundingClientRect();
-  return r.width>50 && r.height>50 && getComputedStyle(el).display!=='none';
-}
-function settleMapLayout(context, fitBounds){
-  var m=S.maps[context];
-  if(!m || !mapElementVisible(context)) return;
-
-  // Leaflet menghitung grid tile berdasarkan ukuran container saat map dibuat.
-  // Dashboard SPA sering mengubah ukuran/panel setelah itu, jadi invalidate beberapa
-  // kali pada frame berbeda agar tidak muncul blok tile kosong.
-  requestAnimationFrame(function(){
-    m.invalidateSize({pan:false,debounceMoveend:true});
-    if(fitBounds && fitBounds.isValid && fitBounds.isValid()){
-      m.fitBounds(fitBounds,{padding:[20,20],animate:false,maxZoom:18});
-    }
-    setTimeout(function(){
-      if(!mapElementVisible(context)) return;
-      m.invalidateSize({pan:false,debounceMoveend:true});
-      if(S.tileLayers[context]) S.tileLayers[context].redraw();
-    },180);
-    setTimeout(function(){
-      if(!mapElementVisible(context)) return;
-      m.invalidateSize({pan:false,debounceMoveend:true});
-    },550);
-  });
+  return r.width>50&&r.height>50&&getComputedStyle(el).display!=='none';
 }
 function ensureMap(context){
+  if(typeof maplibregl==='undefined')return null;
   if(S.maps[context]){
-    settleMapLayout(context,null);
+    if(mapElementVisible(context))S.maps[context].resize();
     return S.maps[context];
   }
 
   var id=context==='live'?'liveMap':'historyMap';
   var el=$(id);
-  var m=L.map(id,{
-    preferCanvas:true,
-    zoomControl:true,
+  var m=new maplibregl.Map({
+    container:id,
+    style:'https://tiles.openfreemap.org/styles/liberty',
+    center:[112.75,-7.25],
+    zoom:12,
     attributionControl:true,
-    updateWhenIdle:false
-  }).setView([-7.25,112.75],12);
-
-  // Pakai endpoint OSM utama tanpa subdomain. keepBuffer membantu ketika container
-  // berubah ukuran/di-pan dan mengurangi "lubang" tile sementara.
-  var tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,
-    minZoom:2,
-    keepBuffer:5,
-    updateWhenIdle:false,
-    updateWhenZooming:false,
-    crossOrigin:true,
-    attribution:'&copy; OpenStreetMap contributors'
+    cooperativeGestures:false
   });
 
-  // Jika satu tile gagal karena koneksi sementara, coba satu kali lagi.
-  tiles.on('tileerror',function(ev){
-    var tile=ev && ev.tile;
-    if(!tile || tile.dataset.torqueRetried==='1') return;
-    tile.dataset.torqueRetried='1';
-    var src=tile.src;
-    setTimeout(function(){
-      if(tile && src) tile.src=src+(src.indexOf('?')>=0?'&':'?')+'retry=1';
-    },250);
-  });
+  m.addControl(new maplibregl.NavigationControl({showCompass:true,showZoom:true}),'top-right');
 
-  tiles.addTo(m);
-  S.tileLayers[context]=tiles;
+  m.on('load',function(){
+    S.mapReady[context]=true;
+    if(S.routeData[context])applyRouteToMap(context,S.routeData[context]);
+    setTimeout(function(){m.resize();},50);
+  });
 
   m.on('click',function(e){
-    var packets=context==='live'?(S.live?S.telemetryCache[S.deviceId+'|'+text(S.live.SESSION_ID)]||[]:[]):S.historyTelemetry||[];
+    var packets=mapPacketsForContext(context);
     var best=null,dist=Infinity;
     packets.forEach(function(p){
-      var g=gpsFromPacket(p);if(!g)return;
-      var d=Math.pow(g.lat-e.latlng.lat,2)+Math.pow(g.lon-e.latlng.lng,2);
+      var g=gpsFromPacket(p);
+      if(!g)return;
+      var dx=g.lon-e.lngLat.lng,dy=g.lat-e.lngLat.lat;
+      var d=dx*dx+dy*dy;
       if(d<dist){dist=d;best=p;}
     });
     if(best){
-      if(context==='live') renderTrace('live',best); else renderTrace('history',best);
+      if(context==='live')renderTrace('live',best);
+      else renderTrace('history',best);
     }
   });
 
   S.maps[context]=m;
 
-  // Recalculate map otomatis jika responsive layout mengubah lebar/tinggi container.
-  if(typeof ResizeObserver!=='undefined' && el){
+  if(typeof ResizeObserver!=='undefined'&&el){
     S.mapResizeObservers[context]=new ResizeObserver(function(){
-      settleMapLayout(context,null);
+      if(S.maps[context]&&mapElementVisible(context))S.maps[context].resize();
     });
     S.mapResizeObservers[context].observe(el);
   }
-
-  settleMapLayout(context,null);
   return m;
 }
-function renderMap(context,packets,from,to){
-  if(typeof L==='undefined') return;
-  var m=ensureMap(context);
-  if(S.mapLayers[context]) S.mapLayers[context].remove();
+function applyRouteToMap(context,route){
+  var m=S.maps[context];
+  if(!m||!S.mapReady[context]||!route||!route.coords||!route.coords.length)return;
 
-  var latlngs=[];
+  var ids=routeIds(context);
+  var geo={
+    type:'Feature',
+    properties:{},
+    geometry:{type:'LineString',coordinates:route.coords}
+  };
+
+  if(m.getSource(ids.source)){
+    m.getSource(ids.source).setData(geo);
+  }else{
+    m.addSource(ids.source,{type:'geojson',data:geo});
+    m.addLayer({
+      id:ids.layer,
+      type:'line',
+      source:ids.source,
+      layout:{'line-join':'round','line-cap':'round'},
+      paint:{
+        'line-color':'#1976d2',
+        'line-width':5,
+        'line-opacity':0.9
+      }
+    });
+  }
+
+  var bounds=new maplibregl.LngLatBounds();
+  route.coords.forEach(function(c){bounds.extend(c);});
+  if(!bounds.isEmpty()){
+    m.fitBounds(bounds,{padding:38,maxZoom:17,duration:0});
+  }
+  setTimeout(function(){m.resize();},80);
+}
+function renderMap(context,packets,from,to){
+  var m=ensureMap(context);
+  if(!m)return;
+
+  var coords=[],lastPoint=null;
   packets.forEach(function(p){
     if(p._time<from||p._time>to)return;
-    var g=gpsFromPacket(p);if(g)latlngs.push([g.lat,g.lon,p._time]);
+    var g=gpsFromPacket(p);
+    if(!g)return;
+    coords.push([g.lon,g.lat]);
+    lastPoint=g;
   });
 
-  if(!latlngs.length){
-    var info=context==='live'?'liveMapInfo':'historyMapInfo';
-    $(info).textContent='GPS tidak tersedia pada range ini.';
-    settleMapLayout(context,null);
+  var infoId=context==='live'?'liveMapInfo':'historyMapInfo';
+  var link=context==='live'?$('liveMapsLink'):$('historyMapsLink');
+
+  if(!coords.length){
+    $(infoId).textContent='GPS tidak tersedia pada range ini.';
+    S.routeData[context]=null;
+    hide(context==='live'?'liveMapsLink':'historyMapsLink');
     return;
   }
 
-  var layer=L.polyline(latlngs.map(function(x){return [x[0],x[1]];}),{
-    weight:4,
-    smoothFactor:1,
-    noClip:false
-  }).addTo(m);
+  S.routeData[context]={coords:coords,last:lastPoint};
+  $(infoId).textContent=coords.length+' titik GPS · '+fmtDateTime(lastPoint.time);
+  link.href='https://www.google.com/maps?q='+lastPoint.lat+','+lastPoint.lon;
+  show(context==='live'?'liveMapsLink':'historyMapsLink');
 
-  S.mapLayers[context]=layer;
-
-  var last=latlngs[latlngs.length-1];
-  var infoId=context==='live'?'liveMapInfo':'historyMapInfo';
-  $(infoId).textContent=latlngs.length+' titik GPS · '+fmtDateTime(last[2]);
-
-  var link=context==='live'?$('liveMapsLink'):$('historyMapsLink');
-  link.href='https://www.google.com/maps?q='+last[0]+','+last[1];
-  show(link);
-
-  // PENTING: invalidate dahulu, baru fit route setelah ukuran container stabil.
-  settleMapLayout(context,layer.getBounds());
+  if(S.mapReady[context])applyRouteToMap(context,S.routeData[context]);
 }
 function setTraceMarker(context,g){
-  if(!g || typeof L==='undefined') return;
+  if(!g||typeof maplibregl==='undefined')return;
   var m=ensureMap(context);
-  if(S.traceMarkers[context]) S.traceMarkers[context].remove();
-  S.traceMarkers[context]=L.circleMarker([g.lat,g.lon],{radius:7,weight:3,fillOpacity:.7}).addTo(m);
-  m.panTo([g.lat,g.lon]);
+  if(!m)return;
+
+  if(S.traceMarkers[context]){
+    S.traceMarkers[context].remove();
+    S.traceMarkers[context]=null;
+  }
+
+  var el=document.createElement('div');
+  el.className='trace-map-marker';
+  S.traceMarkers[context]=new maplibregl.Marker({element:el,anchor:'center'})
+    .setLngLat([g.lon,g.lat])
+    .addTo(m);
+
+  m.easeTo({center:[g.lon,g.lat],duration:300});
   var link=context==='live'?$('liveMapsLink'):$('historyMapsLink');
-  link.href='https://www.google.com/maps?q='+g.lat+','+g.lon;show(link);
+  link.href='https://www.google.com/maps?q='+g.lat+','+g.lon;
+  show(context==='live'?'liveMapsLink':'historyMapsLink');
 }
 
 /* =========================== HISTORY =========================== */
@@ -812,26 +833,60 @@ function renderHistoryList(){
       kpi('Trip KPL',fmtNumber(r.TRIP_KPL,1))+
       kpi('Max RPM',fmtNumber(r.MAX_RPM,0))+
       kpi('Max Suhu',fmtNumber(r.MAX_COOLANT_C,1)+' °C')+
-      '</div><button class="primary history-open" data-session="'+htmlEscape(text(r.SESSION_ID||r._id))+'">Lihat Detail</button></article>';
+      '</div><button type="button" class="primary history-open" data-session-key="'+htmlEscape(text(r._id))+'">Lihat Detail</button></article>';
   }).join('');
 }
 function kpi(label,val){return '<div class="history-kpi"><small>'+label+'</small><strong>'+val+'</strong></div>';}
-async function openHistorySession(sessionId){
-  var r=S.historySessions[sessionId]||null;
+async function openHistorySession(sessionKey){
+  // Gunakan KEY node Firebase sebagai identitas kanonis.
+  // Jangan lookup ulang hanya dari SESSION_ID karena pada data lama field tersebut
+  // bisa kosong/berbeda walaupun node session-nya valid.
+  var r=S.historySessions[sessionKey]||null;
   if(!r){
-    Object.keys(S.historySessions).some(function(k){if(text(S.historySessions[k].SESSION_ID)===text(sessionId)){r=S.historySessions[k];return true;}return false;});
+    toast('Session tidak ditemukan');
+    setError('History session key tidak ditemukan: '+sessionKey);
+    return;
   }
-  if(!r)return;
-  S.historySession=r; S.historyTrace=null; S.historyRange='whole'; S.historyCustom=null;
-  show('historyDetail'); $('historyList').closest('.panel').classList.add('hidden');
+
+  S.historySession=r;
+  S.historySession._firebaseKey=sessionKey;
+  S.historyTrace=null;
+  S.historyRange='whole';
+  S.historyCustom=null;
+
+  // Detail harus tampil SEGERA dari summary SESSIONS.
+  // Loading telemetry/grafik dilakukan setelah UI sudah visible.
+  var listPanel=$('historyList').closest('.panel');
+  if(listPanel) listPanel.classList.add('hidden');
+  show('historyDetail');
+  hide('historyTracePanel');
+  $('historyDetailError').textContent='';
+
+  var sessionId=text(r.SESSION_ID||sessionKey);
   $('historyDetailTitle').textContent='Detail Perjalanan';
-  var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED),end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
-  $('historyDetailSub').textContent=fmtDateTime(start)+' → '+fmtDateTime(end)+' · Session '+text(r.SESSION_ID||sessionId);
+  var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED);
+  var end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
+  $('historyDetailSub').textContent=fmtDateTime(start)+' → '+fmtDateTime(end)+' · Session '+sessionId;
   renderHistorySummary(r);
+
   buildGraphPidChecks('history');
   S.historyGraphKeys=defaultHistoryGraphKeys(r);
   syncGraphChecks('history');
-  await loadHistoryGraph(true);
+
+  try{
+    await loadHistoryGraph(true);
+  }catch(err){
+    // Summary tetap visible walaupun telemetry/map/grafik gagal.
+    setError(err.message||err);
+    $('historyDetailError').textContent='Grafik/telemetry belum dapat dimuat: '+text(err.message||err);
+  }
+
+  // Di HP, langsung arahkan viewport ke awal detail.
+  setTimeout(function(){
+    var el=$('historyDetail');
+    if(el && el.scrollIntoView) el.scrollIntoView({behavior:'smooth',block:'start'});
+    if(S.maps.history) S.maps.history.resize();
+  },50);
 }
 function defaultHistoryGraphKeys(r){
   var keys=safeJson(r.PID_KEYS_JSON,[])||[];
@@ -886,10 +941,10 @@ function showTab(tab){
   hide('emptyPanel');
   if(tab==='live'){
     show('livePanel');hide('historyPanel');
-    setTimeout(function(){settleMapLayout('live',S.mapLayers.live?S.mapLayers.live.getBounds():null);},80);
+    setTimeout(function(){if(S.maps.live)S.maps.live.resize();},80);
   }else{
     hide('livePanel');show('historyPanel');
-    setTimeout(function(){settleMapLayout('history',S.mapLayers.history?S.mapLayers.history.getBounds():null);},80);
+    setTimeout(function(){if(S.maps.history)S.maps.history.resize();},80);
   }
 }
 function startTimers(){
@@ -967,10 +1022,21 @@ function bind(){
   $('historyFilterBtn').addEventListener('click',renderHistoryList);
   $('historyClearFilterBtn').addEventListener('click',function(){$('historyFromDate').value='';$('historyToDate').value='';renderHistoryList();});
   $('historyList').addEventListener('click',function(e){
-    var b=e.target.closest('.history-open');if(b)openHistorySession(b.dataset.session);
+    var b=e.target.closest('.history-open');
+    if(!b)return;
+    e.preventDefault();
+    openHistorySession(b.dataset.sessionKey).catch(function(err){
+      setError(err.message||err);
+      toast('Detail gagal dibuka: '+text(err.message||err));
+      $('historyDetailError').textContent='Detail gagal dibuka: '+text(err.message||err);
+      show('historyDetail');
+    });
   });
   $('closeHistoryDetail').addEventListener('click',function(){
-    hide('historyDetail');$('historyList').closest('.panel').classList.remove('hidden');
+    hide('historyDetail');
+    $('historyDetailError').textContent='';
+    var p=$('historyList').closest('.panel');
+    if(p)p.classList.remove('hidden');
   });
 
   document.addEventListener('visibilitychange',function(){if(!document.hidden&&S.deviceId&&S.tab==='live')loadLive(false).catch(setError);});
