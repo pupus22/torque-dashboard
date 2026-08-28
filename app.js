@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.5.0 FRIENDLY PID';
+var APP_VERSION = 'GitHub Firebase v1.5.1 FRIENDLY PID FIX';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -274,8 +274,10 @@ async function bootstrapData(){
 }
 function normalizeCatalog(raw){
   var out={};
-  Object.keys(raw||{}).forEach(function(k){
-    var r=raw[k]||{};
+  Object.keys(raw||{}).forEach(function(rawKey){
+    var r=raw[rawKey]||{};
+    var k=text(r.RAW_KEY||rawKey).trim().toLowerCase();
+    if(!k)return;
     out[k]={
       key:k,
       name:text(r.DISPLAY_NAME||r.SHORT_NAME||k),
@@ -353,8 +355,8 @@ async function loadLive(initial){
 }
 function renderLive(){
   var l=S.live||{}, d=S.devices[S.deviceId]||{};
-  var pids=safeJson(l.LATEST_PID_JSON,{})||{};
-  var pt=safeJson(l.PID_TIME_JSON,{})||{};
+  var pids=normalizePidObject(safeJson(l.LATEST_PID_JSON,{})||{});
+  var pt=normalizePidObject(safeJson(l.PID_TIME_JSON,{})||{});
   var profile=text(l.PROFILE_NAME||d.LAST_PROFILE||'Tanpa profile');
   $('vehicleMeta').textContent='Profile: '+profile+' · Device: '+S.deviceId+' · Session: '+text(l.SESSION_ID||'-');
 
@@ -381,50 +383,56 @@ function defaultCardKeys(pids){
   return keys.slice(0,12);
 }
 function defaultGraphKeys(){
-  var p=safeJson(S.live && S.live.LATEST_PID_JSON,{})||{};
+  var p=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
   var wanted=['kc','kd','k5','k11'];
   var out=wanted.filter(function(k){return p[k]!==undefined;});
   if(!out.length) out=Object.keys(p).filter(isPidKey).slice(0,1);
   return out.slice(0,MAX_COMPARE);
 }
-function isPidKey(k){ return /^k/i.test(k) && k.indexOf('kff1005')!==0 && k.indexOf('kff1006')!==0; }
+function isPidKey(k){ return /^k/i.test(k) && String(k).toLowerCase().indexOf('kff1005')!==0 && String(k).toLowerCase().indexOf('kff1006')!==0; }
+function normalizePidObject(obj){
+  var out={};
+  Object.keys(obj||{}).forEach(function(k){out[String(k).toLowerCase()]=obj[k];});
+  return out;
+}
 function metaFor(k){
-  var c=S.catalog[k]||null;
-  var f=FRIENDLY_PID[k]||null;
+  var key=text(k).trim().toLowerCase();
+  var c=S.catalog[key]||null;
+  var f=FRIENDLY_PID[key]||null;
 
-  if(!c && f){
+  // Untuk PID yang sudah dikenal, nama ramah adalah sumber tampilan UTAMA.
+  // Catalog Firebase tetap dipakai untuk unit/range/precision bila tersedia.
+  if(f){
     return {
-      key:k,
+      key:key,
       name:f.name,
       short:f.short||f.name,
-      unit:f.unit||'',
-      precision:null,
-      freshness:null,
-      min:null,
-      max:null,
-      defaultCard:!!f.defaultCard,
-      sort:f.sort||9999
+      unit:(c&&c.unit) || f.unit || '',
+      precision:c ? c.precision : null,
+      freshness:c ? c.freshness : null,
+      min:c ? c.min : null,
+      max:c ? c.max : null,
+      defaultCard:!!f.defaultCard || !!(c&&c.defaultCard),
+      sort:(f.sort||((c&&c.sort)||9999))
     };
   }
 
   if(c){
-    // Catalog Firebase tetap sumber utama, tetapi jika nama catalog masih hanya
-    // berupa kode PID mentah, pakai nama ramah yang sudah kita kurasi.
     return {
-      key:k,
-      name:(f && looksLikeRawPidLabel(c.name,k)) ? f.name : (c.name||f&&f.name||k),
-      short:(f && looksLikeRawPidLabel(c.short,k)) ? (f.short||f.name) : (c.short||f&&f.short||c.name||k),
-      unit:c.unit || (f&&f.unit) || '',
+      key:key,
+      name:c.name||key,
+      short:c.short||c.name||key,
+      unit:c.unit||'',
       precision:c.precision,
       freshness:c.freshness,
       min:c.min,
       max:c.max,
-      defaultCard:!!c.defaultCard || !!(f&&f.defaultCard),
-      sort:(c.sort && c.sort!==9999) ? c.sort : ((f&&f.sort)||9999)
+      defaultCard:!!c.defaultCard,
+      sort:c.sort||9999
     };
   }
 
-  return {key:k,name:k,short:k,unit:'',precision:null,freshness:null,min:null,max:null,defaultCard:false,sort:9999};
+  return {key:key,name:key,short:key,unit:'',precision:null,freshness:null,min:null,max:null,defaultCard:false,sort:9999};
 }
 function validPidValue(k,v){
   var n=num(v); if(n===null) return null;
@@ -452,7 +460,7 @@ function renderSensorTable(pids,pidTimes){
   $('sensorTable').innerHTML=keys.map(function(k){
     var m=metaFor(k),v=validPidValue(k,pids[k]),t=ms(pidTimes[k]);
     return '<div class="sensor-row"><div><strong>'+htmlEscape(m.name)+'</strong><div class="muted">'+
-      htmlEscape(k)+(m.unit?' · '+htmlEscape(m.unit):'')+'</div></div><div>'+
+      htmlEscape(m.short||'Sensor Torque')+(m.unit?' · '+htmlEscape(m.unit):'')+'</div></div><div>'+
       (v===null?'N/A':fmtNumber(v,m.precision))+'<div class="muted">'+htmlEscape(t?ageText(t):'')+'</div></div></div>';
   }).join('');
 }
@@ -468,14 +476,14 @@ async function loadPrefs(){
   }
 }
 function openDisplayPrefs(){
-  var pids=safeJson(S.live && S.live.LATEST_PID_JSON,{})||{};
+  var pids=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
   var keys=Object.keys(pids).filter(isPidKey).sort(function(a,b){return metaFor(a).sort-metaFor(b).sort;});
   var selected={}; S.cardKeys.forEach(function(k,i){selected[k]=i+1;});
   $('displayPrefsList').innerHTML=keys.map(function(k){
     var checked=selected[k]?'checked':'';
     return '<div class="pref-row" data-key="'+htmlEscape(k)+'">'+
       '<input type="checkbox" '+checked+'>'+
-      '<div><strong>'+htmlEscape(metaFor(k).name)+'</strong><div class="muted">'+htmlEscape(k)+'</div></div>'+
+      '<div><strong>'+htmlEscape(metaFor(k).name)+'</strong><div class="muted">'+htmlEscape(metaFor(k).unit||metaFor(k).short||'Sensor Torque')+'</div></div>'+
       '<button type="button" class="ghost pref-up">↑</button>'+
       '<button type="button" class="ghost pref-down">↓</button></div>';
   }).join('');
@@ -556,7 +564,7 @@ function currentSessionBounds(){
 function buildGraphPidChecks(context){
   var target=context==='live' ? $('livePidChecks') : $('historyPidChecks');
   var pids={};
-  if(context==='live') pids=safeJson(S.live && S.live.LATEST_PID_JSON,{})||{};
+  if(context==='live') pids=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
   else if(S.historySession) {
     var keys=safeJson(S.historySession.PID_KEYS_JSON,[]);
     keys.forEach(function(k){pids[k]=1;});
