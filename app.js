@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.0.0';
+var APP_VERSION = 'GitHub Firebase v1.2.0 CLEAN';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -31,11 +31,13 @@ var S = {
   historyTrace:null,
   charts:{live:null, history:null},
   maps:{live:null, history:null},
+  tileLayers:{live:null, history:null},
   mapLayers:{live:null, history:null},
   traceMarkers:{live:null, history:null},
+  mapResizeObservers:{live:null, history:null},
   telemetryCache:{},
   timers:{live:null, freshness:null},
-  diag:{startedAt:Date.now(), lastError:'', lastFetch:'', lastFetchMs:0}
+  lastError:''
 };
 
 function $(id){ return document.getElementById(id); }
@@ -100,7 +102,7 @@ function toast(msg){
   clearTimeout(toast._t); toast._t=setTimeout(function(){hide('toast');},2200);
 }
 function setError(msg){
-  S.diag.lastError=text(msg);
+  S.lastError=text(msg);
   console.error(msg);
 }
 window.addEventListener('error',function(e){ setError(e.message || e.error); });
@@ -178,8 +180,6 @@ async function dbFetch(path, opts){
   }
   var txt=await r.text();
   var data=txt ? safeJson(txt,txt) : null;
-  S.diag.lastFetch=path;
-  S.diag.lastFetchMs=Math.round(performance.now()-started);
   if(!r.ok) throw new Error('Firebase '+r.status+' '+path+': '+text(data && data.error || data));
   return data;
 }
@@ -608,8 +608,6 @@ function renderTrace(context,p){
   var q=p._payload||{}, keys=Object.keys(q).filter(isPidKey).sort(function(a,b){return metaFor(a).sort-metaFor(b).sort;});
   var cards=context==='live'?$('liveTraceCards'):$('historyTraceCards');
   renderSensorCards(cards,q,{},keys);
-  var raw=context==='live'?$('liveTraceRaw'):$('historyTraceRaw');
-  raw.textContent=JSON.stringify(q,null,2);
   var tId=context==='live'?'liveTraceTime':'historyTraceTime';
   $(tId).textContent=fmtDateTime(p._time);
 
@@ -630,25 +628,78 @@ async function traceHistoryAt(target){
   if(!p){toast('Tidak ada telemetry di sekitar waktu ini');return;}
   renderTrace('history',p);
 }
-async function saveTraceNote(context){
-  var p=context==='live'?S.liveTrace:S.historyTrace;
-  var session=context==='live'?text(S.live&&S.live.SESSION_ID):text(S.historySession&&S.historySession.SESSION_ID);
-  var textarea=context==='live'?$('liveTraceNote'):$('historyTraceNote');
-  if(!p || !textarea.value.trim()) return;
-  var path='dashboard/notes/'+safeKey(S.uid)+'/'+safeKey(S.deviceId)+'/'+safeKey(session)+'/'+p._time;
-  await dbPut(path,{deviceId:S.deviceId,sessionId:session,torqueTime:p._time,note:textarea.value.trim(),createdAt:Date.now()});
-  toast('Catatan disimpan');
-}
-
 /* =========================== MAP =========================== */
 
+function mapElementVisible(context){
+  var el=$(context==='live'?'liveMap':'historyMap');
+  if(!el) return false;
+  var r=el.getBoundingClientRect();
+  return r.width>50 && r.height>50 && getComputedStyle(el).display!=='none';
+}
+function settleMapLayout(context, fitBounds){
+  var m=S.maps[context];
+  if(!m || !mapElementVisible(context)) return;
+
+  // Leaflet menghitung grid tile berdasarkan ukuran container saat map dibuat.
+  // Dashboard SPA sering mengubah ukuran/panel setelah itu, jadi invalidate beberapa
+  // kali pada frame berbeda agar tidak muncul blok tile kosong.
+  requestAnimationFrame(function(){
+    m.invalidateSize({pan:false,debounceMoveend:true});
+    if(fitBounds && fitBounds.isValid && fitBounds.isValid()){
+      m.fitBounds(fitBounds,{padding:[20,20],animate:false,maxZoom:18});
+    }
+    setTimeout(function(){
+      if(!mapElementVisible(context)) return;
+      m.invalidateSize({pan:false,debounceMoveend:true});
+      if(S.tileLayers[context]) S.tileLayers[context].redraw();
+    },180);
+    setTimeout(function(){
+      if(!mapElementVisible(context)) return;
+      m.invalidateSize({pan:false,debounceMoveend:true});
+    },550);
+  });
+}
 function ensureMap(context){
-  if(S.maps[context]) return S.maps[context];
+  if(S.maps[context]){
+    settleMapLayout(context,null);
+    return S.maps[context];
+  }
+
   var id=context==='live'?'liveMap':'historyMap';
-  var m=L.map(id,{preferCanvas:true}).setView([-7.25,112.75],12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,attribution:'&copy; OpenStreetMap'
-  }).addTo(m);
+  var el=$(id);
+  var m=L.map(id,{
+    preferCanvas:true,
+    zoomControl:true,
+    attributionControl:true,
+    updateWhenIdle:false
+  }).setView([-7.25,112.75],12);
+
+  // Pakai endpoint OSM utama tanpa subdomain. keepBuffer membantu ketika container
+  // berubah ukuran/di-pan dan mengurangi "lubang" tile sementara.
+  var tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    minZoom:2,
+    keepBuffer:5,
+    updateWhenIdle:false,
+    updateWhenZooming:false,
+    crossOrigin:true,
+    attribution:'&copy; OpenStreetMap contributors'
+  });
+
+  // Jika satu tile gagal karena koneksi sementara, coba satu kali lagi.
+  tiles.on('tileerror',function(ev){
+    var tile=ev && ev.tile;
+    if(!tile || tile.dataset.torqueRetried==='1') return;
+    tile.dataset.torqueRetried='1';
+    var src=tile.src;
+    setTimeout(function(){
+      if(tile && src) tile.src=src+(src.indexOf('?')>=0?'&':'?')+'retry=1';
+    },250);
+  });
+
+  tiles.addTo(m);
+  S.tileLayers[context]=tiles;
+
   m.on('click',function(e){
     var packets=context==='live'?(S.live?S.telemetryCache[S.deviceId+'|'+text(S.live.SESSION_ID)]||[]:[]):S.historyTelemetry||[];
     var best=null,dist=Infinity;
@@ -661,31 +712,56 @@ function ensureMap(context){
       if(context==='live') renderTrace('live',best); else renderTrace('history',best);
     }
   });
+
   S.maps[context]=m;
+
+  // Recalculate map otomatis jika responsive layout mengubah lebar/tinggi container.
+  if(typeof ResizeObserver!=='undefined' && el){
+    S.mapResizeObservers[context]=new ResizeObserver(function(){
+      settleMapLayout(context,null);
+    });
+    S.mapResizeObservers[context].observe(el);
+  }
+
+  settleMapLayout(context,null);
   return m;
 }
 function renderMap(context,packets,from,to){
   if(typeof L==='undefined') return;
   var m=ensureMap(context);
   if(S.mapLayers[context]) S.mapLayers[context].remove();
+
   var latlngs=[];
   packets.forEach(function(p){
     if(p._time<from||p._time>to)return;
     var g=gpsFromPacket(p);if(g)latlngs.push([g.lat,g.lon,p._time]);
   });
+
   if(!latlngs.length){
     var info=context==='live'?'liveMapInfo':'historyMapInfo';
     $(info).textContent='GPS tidak tersedia pada range ini.';
+    settleMapLayout(context,null);
     return;
   }
-  var layer=L.polyline(latlngs.map(function(x){return [x[0],x[1]];}),{weight:4}).addTo(m);
-  S.mapLayers[context]=layer;m.fitBounds(layer.getBounds(),{padding:[20,20]});
+
+  var layer=L.polyline(latlngs.map(function(x){return [x[0],x[1]];}),{
+    weight:4,
+    smoothFactor:1,
+    noClip:false
+  }).addTo(m);
+
+  S.mapLayers[context]=layer;
+
   var last=latlngs[latlngs.length-1];
   var infoId=context==='live'?'liveMapInfo':'historyMapInfo';
   $(infoId).textContent=latlngs.length+' titik GPS · '+fmtDateTime(last[2]);
+
   var link=context==='live'?$('liveMapsLink'):$('historyMapsLink');
-  link.href='https://www.google.com/maps?q='+last[0]+','+last[1];show(link);
-  setTimeout(function(){m.invalidateSize();},50);
+  link.href='https://www.google.com/maps?q='+last[0]+','+last[1];
+  show(link);
+
+  // PENTING: invalidate dahulu, baru fit route setelah ukuran container stabil.
+  settleMapLayout(context,layer.getBounds());
 }
 function setTraceMarker(context,g){
   if(!g || typeof L==='undefined') return;
@@ -808,8 +884,13 @@ function showTab(tab){
   $('historyTabBtn').classList.toggle('active',tab==='history');
   if(!S.deviceId){setEmpty('Pilih kendaraan untuk menampilkan data.');return;}
   hide('emptyPanel');
-  if(tab==='live'){show('livePanel');hide('historyPanel');}
-  else{hide('livePanel');show('historyPanel');setTimeout(function(){if(S.maps.history)S.maps.history.invalidateSize();},50);}
+  if(tab==='live'){
+    show('livePanel');hide('historyPanel');
+    setTimeout(function(){settleMapLayout('live',S.mapLayers.live?S.mapLayers.live.getBounds():null);},80);
+  }else{
+    hide('livePanel');show('historyPanel');
+    setTimeout(function(){settleMapLayout('history',S.mapLayers.history?S.mapLayers.history.getBounds():null);},80);
+  }
 }
 function startTimers(){
   stopTimers();
@@ -821,31 +902,6 @@ function startTimers(){
 }
 function stopTimers(){
   Object.keys(S.timers).forEach(function(k){if(S.timers[k])clearInterval(S.timers[k]);S.timers[k]=null;});
-}
-
-/* =========================== DIAGNOSTIC =========================== */
-
-function openDiag(){
-  var obj={
-    version:APP_VERSION,
-    projectId:CFG.projectId,
-    databaseURL:CFG.databaseURL,
-    authenticated:!!S.auth,
-    user:S.auth&&S.auth.email,
-    deviceId:S.deviceId,
-    liveSession:S.live&&S.live.SESSION_ID,
-    liveLastReceived:S.live&&fmtDateTime(ms(S.live.LAST_RECEIVED)),
-    devices:Object.keys(S.devices).length,
-    catalog:Object.keys(S.catalog).length,
-    historySessions:Object.keys(S.historySessions).length,
-    telemetryCached:Object.keys(S.telemetryCache).length,
-    lastFetch:S.diag.lastFetch,
-    lastFetchMs:S.diag.lastFetchMs,
-    lastError:S.diag.lastError,
-    bridgeNote:'Firebase mirror diperbarui oleh Apps Script trigger ±1 menit.'
-  };
-  $('diagContent').textContent=JSON.stringify(obj,null,2);
-  $('diagDialog').showModal();
 }
 
 /* =========================== EVENTS =========================== */
@@ -863,8 +919,6 @@ function bind(){
   $('vehicleSelect').addEventListener('change',function(){selectVehicle(this.value).catch(function(e){setError(e.message);toast(e.message);});});
   $('liveTabBtn').addEventListener('click',function(){showTab('live');});
   $('historyTabBtn').addEventListener('click',function(){showHistory();});
-  $('diagBtn').addEventListener('click',openDiag);
-  $('closeDiagBtn').addEventListener('click',function(){$('diagDialog').close();});
   $('displaySettingsBtn').addEventListener('click',openDisplayPrefs);
   $('displayPrefsList').addEventListener('click',function(e){
     if(e.target.classList.contains('pref-up'))movePrefRow(e.target,-1);
@@ -908,8 +962,6 @@ function bind(){
 
   $('backToNowBtn').addEventListener('click',function(){S.liveTrace=null;hide('liveTracePanel');loadLiveGraph();});
   $('resetHistoryRange').addEventListener('click',function(){S.historyRange='whole';S.historyTrace=null;hide('historyTracePanel');loadHistoryGraph();});
-  $('saveLiveTraceNote').addEventListener('click',function(){saveTraceNote('live').catch(function(e){toast(e.message);});});
-  $('saveHistoryTraceNote').addEventListener('click',function(){saveTraceNote('history').catch(function(e){toast(e.message);});});
 
   $('historyRefreshBtn').addEventListener('click',function(){loadHistory(true);});
   $('historyFilterBtn').addEventListener('click',renderHistoryList);

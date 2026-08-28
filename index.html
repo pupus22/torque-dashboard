@@ -42,7 +42,6 @@
         <div class="subline">GitHub SPA · Firebase mirror · LIVE · TRACE · GPS · Riwayat</div>
       </div>
       <div class="top-actions">
-        <button id="diagBtn" class="ghost">Diagnostik</button>
         <button id="logoutBtn" class="ghost">Keluar</button>
       </div>
     </header>
@@ -138,14 +137,6 @@
             <button id="backToNowBtn" class="primary">Kembali ke LIVE</button>
           </div>
           <div id="liveTraceCards" class="sensor-grid trace-grid"></div>
-          <details class="advanced">
-            <summary>Advanced / RAW packet</summary>
-            <pre id="liveTraceRaw"></pre>
-          </details>
-          <div class="trace-note">
-            <textarea id="liveTraceNote" placeholder="Catatan pada titik ini..."></textarea>
-            <button id="saveLiveTraceNote" class="ghost">Simpan Catatan</button>
-          </div>
         </section>
 
         <section class="panel">
@@ -246,14 +237,6 @@
               <button id="resetHistoryRange" class="ghost">Seluruh Trip</button>
             </div>
             <div id="historyTraceCards" class="sensor-grid trace-grid"></div>
-            <details class="advanced">
-              <summary>Advanced / RAW packet</summary>
-              <pre id="historyTraceRaw"></pre>
-            </details>
-            <div class="trace-note">
-              <textarea id="historyTraceNote" placeholder="Catatan pada titik ini..."></textarea>
-              <button id="saveHistoryTraceNote" class="ghost">Simpan Catatan</button>
-            </div>
           </section>
 
           <section class="panel">
@@ -287,15 +270,6 @@
       </form>
     </dialog>
 
-    <dialog id="diagDialog">
-      <div class="dialog-card">
-        <div class="section-head">
-          <h2>Diagnostik</h2>
-          <button id="closeDiagBtn" class="ghost">✕</button>
-        </div>
-        <pre id="diagContent"></pre>
-      </div>
-    </dialog>
 
     <div id="toast" class="toast hidden"></div>
   </div>

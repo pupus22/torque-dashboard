@@ -90,8 +90,7 @@ h2{font-size:1.05rem;margin:0}
 .map{height:380px;border-radius:12px;overflow:hidden;background:#0d141c}
 .trace-grid{margin-bottom:12px}
 .advanced{margin-top:12px}
-.advanced pre,#diagContent{white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;background:#090f15;border-radius:12px;padding:12px}
-.trace-note{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px;align-items:end}
+.advanced pre{white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;background:#090f15;border-radius:12px;padding:12px}
 .link-btn{text-decoration:none;display:inline-flex;align-items:center}
 .history-filters{display:grid;grid-template-columns:1fr 1fr auto auto;gap:8px;margin-bottom:12px;align-items:end}
 .history-list{display:grid;gap:10px}
@@ -134,5 +133,30 @@ dialog::backdrop{background:rgba(0,0,0,.62)}
   .custom-range{grid-template-columns:1fr}
   .history-filters{grid-template-columns:1fr 1fr}
   .history-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .trace-note{grid-template-columns:1fr}
+}
+
+
+/* ================= MAP FIX v1.1 =================
+   Pastikan Leaflet tidak mewarisi aturan responsif gambar dan selalu
+   menghitung tile pada ukuran container yang sebenarnya. */
+.leaflet-container{
+  width:100% !important;
+  height:100% !important;
+  min-height:310px;
+  background:#0d141c;
+  isolation:isolate;
+}
+.leaflet-container img.leaflet-tile{
+  max-width:none !important;
+  max-height:none !important;
+  width:256px;
+  height:256px;
+}
+.leaflet-tile-pane{
+  will-change:transform;
+}
+.map{
+  position:relative;
+  width:100%;
+  contain:layout paint;
 }
