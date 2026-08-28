@@ -1,0 +1,20 @@
+TORQUE GITHUB DASHBOARD v1 — CHECKLIST
+=====================================
+[OK] index.html references only static assets + config/app.
+[OK] No Firebase password hardcoded.
+[OK] Firebase Auth uses REST signInWithPassword + refresh token.
+[OK] Realtime Database reads require authenticated ID token.
+[OK] No request downloads entire /mirror tree.
+[OK] Bootstrap reads devices/live/catalog/config separately.
+[OK] History reads only sessions for selected device.
+[OK] Telemetry fetch is scoped by date + device + session.
+[OK] LIVE/Riwayat are SPA tabs; no page reload.
+[OK] Auto-select only when exactly one device exists.
+[OK] Compare up to 4 PIDs.
+[OK] 0 is preserved as valid value.
+[OK] kd=255 rejected in dashboard validation.
+[OK] GPS 0,0 and poor accuracy rejected.
+[OK] Notes/preferences write outside mirror.
+[OK] Telemetry cache in browser reduces repeated downloads.
+[OK] Chart downsampling limits initial displayed points.
+[OK] Mobile responsive CSS included.

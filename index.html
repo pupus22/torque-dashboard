@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b1118">
+  <title>Torque Vehicle Monitor</title>
+
+  <link rel="preconnect" href="https://www.gstatic.com">
+  <link rel="preconnect" href="https://tile.openstreetmap.org">
+  <link rel="stylesheet" href="style.css">
+
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIINfQ3ynhH1hlOZLMkT3Q5yCPflCchjMZc="
+        crossorigin="">
+</head>
+<body>
+  <div id="loginScreen" class="screen center-screen">
+    <form id="loginForm" class="login-card" autocomplete="on">
+      <div class="brand">Torque Vehicle Monitor</div>
+      <div class="muted">Dashboard GitHub + Firebase</div>
+      <label>Email Firebase
+        <input id="loginEmail" type="email" autocomplete="username" required placeholder="email akun Firebase">
+      </label>
+      <label>Password
+        <input id="loginPassword" type="password" autocomplete="current-password" required placeholder="password">
+      </label>
+      <label class="check-row">
+        <input id="rememberLogin" type="checkbox">
+        <span>Ingat login di browser ini</span>
+      </label>
+      <button class="primary full" type="submit">Masuk</button>
+      <div id="loginError" class="error-text"></div>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div>
+        <h1>Torque Vehicle Monitor</h1>
+        <div class="subline">GitHub SPA · Firebase mirror · LIVE · TRACE · GPS · Riwayat</div>
+      </div>
+      <div class="top-actions">
+        <button id="diagBtn" class="ghost">Diagnostik</button>
+        <button id="logoutBtn" class="ghost">Keluar</button>
+      </div>
+    </header>
+
+    <section class="selector-wrap">
+      <label class="tiny-label" for="vehicleSelect">KENDARAAN / PROFILE TORQUE</label>
+      <select id="vehicleSelect">
+        <option value="">Pilih kendaraan...</option>
+      </select>
+      <div id="vehicleMeta" class="vehicle-meta"></div>
+    </section>
+
+    <nav class="tabs" aria-label="Navigasi utama">
+      <button id="liveTabBtn" class="tab active" data-tab="live">LIVE</button>
+      <button id="historyTabBtn" class="tab" data-tab="history">RIWAYAT LOG</button>
+    </nav>
+
+    <main>
+      <section id="emptyPanel" class="panel empty-state">
+        Pilih kendaraan untuk menampilkan data.
+      </section>
+
+      <section id="livePanel" class="hidden">
+        <div id="liveStatus" class="status-strip"></div>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Sensor Utama</h2>
+              <div class="muted">Nilai terbaru dari LIVE_STATE</div>
+            </div>
+            <button id="displaySettingsBtn" class="ghost">⚙ Atur Tampilan</button>
+          </div>
+          <div id="liveCards" class="sensor-grid"></div>
+
+          <details id="availableSensors" class="sensor-details">
+            <summary>Sensor Tersedia</summary>
+            <div id="sensorTable" class="sensor-list"></div>
+          </details>
+        </section>
+
+        <section class="panel graph-panel">
+          <div class="section-head wrap">
+            <div>
+              <h2>Grafik Telemetry</h2>
+              <div id="graphSubtitle" class="muted">Pilih PID dan range</div>
+            </div>
+            <button id="graphRefreshBtn" class="ghost">↻ Muat Grafik</button>
+          </div>
+
+          <div class="graph-controls">
+            <div class="pid-selector-box">
+              <div class="control-title">PID (maks. 4)</div>
+              <div id="livePidChecks" class="pid-checks"></div>
+            </div>
+
+            <div class="control-group">
+              <div class="control-title">Range LIVE</div>
+              <div id="liveRangeButtons" class="segmented">
+                <button data-minutes="1">1m</button>
+                <button data-minutes="5">5m</button>
+                <button data-minutes="10" class="active">10m</button>
+                <button data-minutes="30">30m</button>
+                <button data-minutes="60">1j</button>
+                <button data-minutes="custom">Custom</button>
+              </div>
+            </div>
+
+            <div id="liveCustomRange" class="custom-range hidden">
+              <label>Dari <input id="liveFrom" type="datetime-local" step="1"></label>
+              <label>Sampai <input id="liveTo" type="datetime-local" step="1"></label>
+              <button id="liveCustomApply" class="primary">Tampilkan</button>
+            </div>
+
+            <label class="switch-row">
+              <input id="normalizeLive" type="checkbox">
+              <span>Normalized 0–100%</span>
+            </label>
+          </div>
+
+          <div id="liveStats" class="stats-row"></div>
+          <div id="liveGraphLoading" class="loading-line hidden">Memuat grafik...</div>
+          <div class="chart-wrap"><canvas id="liveChart"></canvas></div>
+          <div class="chart-hint">Tap grafik untuk TRACE · drag untuk geser · scroll/pinch untuk zoom</div>
+        </section>
+
+        <section id="liveTracePanel" class="panel hidden">
+          <div class="section-head">
+            <div>
+              <h2>TRACE</h2>
+              <div id="liveTraceTime" class="muted"></div>
+            </div>
+            <button id="backToNowBtn" class="primary">Kembali ke LIVE</button>
+          </div>
+          <div id="liveTraceCards" class="sensor-grid trace-grid"></div>
+          <details class="advanced">
+            <summary>Advanced / RAW packet</summary>
+            <pre id="liveTraceRaw"></pre>
+          </details>
+          <div class="trace-note">
+            <textarea id="liveTraceNote" placeholder="Catatan pada titik ini..."></textarea>
+            <button id="saveLiveTraceNote" class="ghost">Simpan Catatan</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h2>GPS / Peta</h2>
+              <div id="liveMapInfo" class="muted">Peta dimuat saat grafik tersedia.</div>
+            </div>
+            <a id="liveMapsLink" class="ghost link-btn hidden" target="_blank" rel="noopener">Buka di Maps</a>
+          </div>
+          <div id="liveMap" class="map"></div>
+        </section>
+      </section>
+
+      <section id="historyPanel" class="hidden">
+        <section class="panel">
+          <div class="section-head wrap">
+            <div>
+              <h2>Riwayat Perjalanan</h2>
+              <div class="muted">Summary dari SESSIONS</div>
+            </div>
+            <button id="historyRefreshBtn" class="ghost">↻ Muat Ulang</button>
+          </div>
+
+          <div class="history-filters">
+            <label>Dari <input id="historyFromDate" type="date"></label>
+            <label>Sampai <input id="historyToDate" type="date"></label>
+            <button id="historyFilterBtn" class="ghost">Terapkan</button>
+            <button id="historyClearFilterBtn" class="ghost">Reset</button>
+          </div>
+
+          <div id="historyLoading" class="loading-line hidden">Memuat riwayat...</div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+
+        <section id="historyDetail" class="hidden">
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <h2 id="historyDetailTitle">Detail Perjalanan</h2>
+                <div id="historyDetailSub" class="muted"></div>
+              </div>
+              <button id="closeHistoryDetail" class="ghost">Kembali</button>
+            </div>
+            <div id="historySummary" class="summary-grid"></div>
+          </section>
+
+          <section class="panel graph-panel">
+            <div class="section-head wrap">
+              <div>
+                <h2>Grafik Riwayat</h2>
+                <div id="historyGraphSubtitle" class="muted"></div>
+              </div>
+              <button id="historyGraphRefreshBtn" class="ghost">↻ Muat Grafik</button>
+            </div>
+
+            <div class="graph-controls">
+              <div class="pid-selector-box">
+                <div class="control-title">PID (maks. 4)</div>
+                <div id="historyPidChecks" class="pid-checks"></div>
+              </div>
+
+              <div class="control-group">
+                <div class="control-title">Range Riwayat</div>
+                <div id="historyRangeButtons" class="segmented">
+                  <button data-range="whole" class="active">Seluruh Trip</button>
+                  <button data-range="5">5m</button>
+                  <button data-range="15">15m</button>
+                  <button data-range="30">30m</button>
+                  <button data-range="custom">Custom</button>
+                </div>
+              </div>
+
+              <div id="historyCustomRange" class="custom-range hidden">
+                <label>Dari <input id="historyFrom" type="datetime-local" step="1"></label>
+                <label>Sampai <input id="historyTo" type="datetime-local" step="1"></label>
+                <button id="historyCustomApply" class="primary">Tampilkan</button>
+              </div>
+
+              <label class="switch-row">
+                <input id="normalizeHistory" type="checkbox">
+                <span>Normalized 0–100%</span>
+              </label>
+            </div>
+
+            <div id="historyStats" class="stats-row"></div>
+            <div id="historyGraphLoading" class="loading-line hidden">Memuat grafik...</div>
+            <div class="chart-wrap"><canvas id="historyChart"></canvas></div>
+            <div class="chart-hint">Tap grafik untuk TRACE · 5/15/30 menit berpusat pada TRACE</div>
+          </section>
+
+          <section id="historyTracePanel" class="panel hidden">
+            <div class="section-head">
+              <div>
+                <h2>TRACE Riwayat</h2>
+                <div id="historyTraceTime" class="muted"></div>
+              </div>
+              <button id="resetHistoryRange" class="ghost">Seluruh Trip</button>
+            </div>
+            <div id="historyTraceCards" class="sensor-grid trace-grid"></div>
+            <details class="advanced">
+              <summary>Advanced / RAW packet</summary>
+              <pre id="historyTraceRaw"></pre>
+            </details>
+            <div class="trace-note">
+              <textarea id="historyTraceNote" placeholder="Catatan pada titik ini..."></textarea>
+              <button id="saveHistoryTraceNote" class="ghost">Simpan Catatan</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Rute Perjalanan</h2>
+                <div id="historyMapInfo" class="muted"></div>
+              </div>
+              <a id="historyMapsLink" class="ghost link-btn hidden" target="_blank" rel="noopener">Buka di Maps</a>
+            </div>
+            <div id="historyMap" class="map"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="displayDialog">
+      <form method="dialog" class="dialog-card">
+        <div class="section-head">
+          <div>
+            <h2>Atur Tampilan LIVE</h2>
+            <div class="muted">Centang sensor dan atur urutan kartu.</div>
+          </div>
+          <button value="cancel" class="ghost">✕</button>
+        </div>
+        <div id="displayPrefsList" class="prefs-list"></div>
+        <div class="dialog-actions">
+          <button id="resetDisplayPrefs" type="button" class="ghost">Reset Default</button>
+          <button id="saveDisplayPrefs" type="button" class="primary">Simpan</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="diagDialog">
+      <div class="dialog-card">
+        <div class="section-head">
+          <h2>Diagnostik</h2>
+          <button id="closeDiagBtn" class="ghost">✕</button>
+        </div>
+        <pre id="diagContent"></pre>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="firebase-config.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
