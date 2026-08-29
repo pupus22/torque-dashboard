@@ -241,3 +241,37 @@ dialog::backdrop{background:rgba(0,0,0,.62)}
     text-align:center;
   }
 }
+
+
+/* ================= v1.5.3 UI CLEAN ================= */
+.topbar{padding-bottom:8px}
+.topbar h1{margin-bottom:0}
+.vehicle-meta.hidden{display:none !important}
+.detail-actions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.graph-empty{
+  min-height:220px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  border:1px dashed var(--line);
+  border-radius:12px;
+  color:var(--muted);
+  padding:24px;
+  background:rgba(255,255,255,.015);
+}
+.sensor-card{min-height:76px}
+.sensor-card .sensor-value{margin-top:4px}
+@media (max-width:720px){
+  .topbar{align-items:center;padding-top:10px;padding-bottom:6px}
+  .topbar h1{font-size:20px}
+  .detail-actions{width:100%;justify-content:stretch}
+  .detail-actions button{flex:1}
+  .graph-empty{min-height:160px}
+}

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0b1118">
+  <meta name="app-version" content="1.5.4">
   <title>Torque Vehicle Monitor</title>
 
   <link rel="preconnect" href="https://www.gstatic.com">
@@ -35,7 +36,6 @@
     <header class="topbar">
       <div>
         <h1>Torque Vehicle Monitor</h1>
-        <div class="subline">GitHub SPA · Firebase mirror · LIVE · TRACE · GPS · Riwayat · <strong>v1.5.2</strong></div>
       </div>
       <div class="top-actions">
         <button id="logoutBtn" class="ghost">Keluar</button>
@@ -47,7 +47,7 @@
       <select id="vehicleSelect">
         <option value="">Pilih kendaraan...</option>
       </select>
-      <div id="vehicleMeta" class="vehicle-meta"></div>
+      <div id="vehicleMeta" class="vehicle-meta hidden"></div>
     </section>
 
     <nav class="tabs" aria-label="Navigasi utama">
@@ -90,7 +90,7 @@
 
           <div class="graph-controls">
             <div class="pid-selector-box">
-              <div class="control-title">PID (maks. 4)</div>
+              <div class="control-title">Sensor Grafik (maks. 4)</div>
               <div id="livePidChecks" class="pid-checks"></div>
             </div>
 
@@ -118,10 +118,10 @@
             </label>
           </div>
 
-          <div id="liveStats" class="stats-row"></div>
           <div id="liveGraphLoading" class="loading-line hidden">Memuat grafik...</div>
-          <div class="chart-wrap"><canvas id="liveChart"></canvas></div>
-          <div class="chart-hint">Tap grafik untuk TRACE · drag untuk geser · scroll/pinch untuk zoom</div>
+          <div id="liveGraphEmpty" class="graph-empty">Pilih sensor untuk menampilkan grafik · maksimal 4 sensor</div>
+          <div id="liveChartWrap" class="chart-wrap hidden"><canvas id="liveChart"></canvas></div>
+          <div class="chart-hint">Desktop: arahkan cursor untuk lihat nilai · HP: tap grafik untuk lihat nilai + TRACE · drag untuk geser · pinch untuk zoom</div>
         </section>
 
         <section id="liveTracePanel" class="panel hidden">
@@ -179,7 +179,10 @@
                 <div id="historyDetailSub" class="muted"></div>
                 <div id="historyDetailError" class="error-text"></div>
               </div>
-              <button id="closeHistoryDetail" class="ghost">Kembali</button>
+              <div class="detail-actions">
+                <button id="historyDisplaySettingsBtn" class="ghost" type="button">⚙ Atur Tampilan</button>
+                <button id="closeHistoryDetail" class="ghost" type="button">Kembali</button>
+              </div>
             </div>
             <div id="historySummary" class="summary-grid"></div>
           </section>
@@ -195,7 +198,7 @@
 
             <div class="graph-controls">
               <div class="pid-selector-box">
-                <div class="control-title">PID (maks. 4)</div>
+                <div class="control-title">Sensor Grafik (maks. 4)</div>
                 <div id="historyPidChecks" class="pid-checks"></div>
               </div>
 
@@ -222,9 +225,9 @@
               </label>
             </div>
 
-            <div id="historyStats" class="stats-row"></div>
             <div id="historyGraphLoading" class="loading-line hidden">Memuat grafik...</div>
-            <div class="chart-wrap"><canvas id="historyChart"></canvas></div>
+            <div id="historyGraphEmpty" class="graph-empty">Pilih sensor untuk menampilkan grafik · maksimal 4 sensor</div>
+            <div id="historyChartWrap" class="chart-wrap hidden"><canvas id="historyChart"></canvas></div>
             <div class="chart-hint">Tap grafik untuk TRACE · 5/15/30 menit berpusat pada TRACE</div>
           </section>
 
@@ -271,16 +274,33 @@
     </dialog>
 
 
+    <dialog id="historyDisplayDialog">
+      <form method="dialog" class="dialog-card">
+        <div class="section-head">
+          <div>
+            <h2>Atur Detail Riwayat</h2>
+            <div class="muted">Pilih data ringkasan yang ingin ditampilkan dan atur urutannya.</div>
+          </div>
+          <button value="cancel" class="ghost">✕</button>
+        </div>
+        <div id="historyDisplayPrefsList" class="prefs-list"></div>
+        <div class="dialog-actions">
+          <button id="resetHistoryDisplayPrefs" type="button" class="ghost">Reset Default</button>
+          <button id="saveHistoryDisplayPrefs" type="button" class="primary">Simpan</button>
+        </div>
+      </form>
+    </dialog>
+
     <div id="toast" class="toast hidden"></div>
   </div>
 
-  <script src="firebase-config.js?v=1.5.2"></script>
+  <script src="firebase-config.js?v=1.5.4"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
   <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 
-  <script src="app.js?v=1.5.2"></script>
+  <script src="app.js?v=1.5.4"></script>
 </body>
 </html>

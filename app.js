@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.5.2 ROUTE FIX';
+var APP_VERSION = 'GitHub Firebase v1.5.4 GRAPH CLEAN';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -34,6 +34,10 @@ var FRIENDLY_PID = {
   'kff1202':  {name:'Boost / Vakum',short:'Boost / Vakum',unit:'',sort:240},
   'kff124d':  {name:'AFR Target',short:'AFR Target',unit:':1',sort:250},
   'kff126a':  {name:'Estimasi Jarak Sisa BBM',short:'Jarak Sisa BBM',unit:'km',sort:260},
+  'kff1296':  {name:'Persentase Berkendara Kota',short:'Berkendara Kota',unit:'%',sort:270},
+  'kff1297':  {name:'Persentase Berkendara Highway',short:'Berkendara Highway',unit:'%',sort:280},
+  'kff1298':  {name:'Persentase Idle',short:'Idle',unit:'%',sort:290},
+  'kff12b6':  {name:'Energi Kinetik Positif (PKE)',short:'PKE',unit:'km/hr²',sort:300},
 
   // Extended / GM PID yang sudah teridentifikasi dari metadata Torque.
   'k221141':  {name:'Tegangan Pengapian 1',short:'Ignition V',unit:'V',sort:310},
@@ -50,6 +54,26 @@ function looksLikeRawPidLabel(label,key){
 }
 
 
+var HISTORY_SUMMARY_FIELDS = {
+  start:       {label:'Mulai'},
+  end:         {label:'Selesai'},
+  duration:    {label:'Durasi'},
+  distance:    {label:'Jarak'},
+  tripKpl:     {label:'Rata-rata BBM Trip'},
+  maxSpeed:    {label:'Kecepatan Maks'},
+  maxRpm:      {label:'RPM Maks'},
+  maxCoolant:  {label:'Suhu Maks'},
+  minVolts:    {label:'Tegangan ECU Min'},
+  maxVolts:    {label:'Tegangan ECU Max'},
+  packet:      {label:'Packet Telemetry'},
+  gpsValid:    {label:'GPS Valid'},
+  longestGap:  {label:'Gap Terpanjang'}
+};
+var DEFAULT_HISTORY_SUMMARY_KEYS = [
+  'start','end','duration','distance','tripKpl','maxSpeed','maxRpm','maxCoolant'
+];
+
+
 var S = {
   auth:null,
   uid:'',
@@ -61,6 +85,7 @@ var S = {
   live:null,
   tab:'live',
   cardKeys:[],
+  historySummaryKeys:DEFAULT_HISTORY_SUMMARY_KEYS.slice(),
   liveGraphKeys:[],
   historyGraphKeys:[],
   liveRangeMinutes:10,
@@ -305,7 +330,7 @@ function renderVehicleOptions(){
     var d=S.devices[id]||{}, l=S.liveAll[id]||{};
     var profile=text(l.PROFILE_NAME||d.LAST_PROFILE||'Tanpa profile');
     var alias=text(d.DISPLAY_ALIAS||'');
-    var label=(alias?alias+' · ':'')+profile+' · '+id.slice(0,6)+' · '+liveLabel(l);
+    var label=(alias?alias+' · ':'')+profile+' · '+liveLabel(l);
     var o=document.createElement('option'); o.value=id; o.textContent=label; sel.appendChild(o);
   });
 }
@@ -327,6 +352,9 @@ async function selectVehicle(id){
   S.deviceId=id||'';
   S.live=null; S.liveTrace=null; S.historySession=null; S.historyTelemetry=null;
   S.historySessions={};
+  S.liveGraphKeys=[];
+  S.historyGraphKeys=[];
+  S.historySummaryKeys=DEFAULT_HISTORY_SUMMARY_KEYS.slice();
   S.liveFollow=true;
   S.latestLiveGps=null;
   updateFollowButton();
@@ -348,9 +376,10 @@ async function loadLive(initial){
   renderLive();
   if(initial){
     buildGraphPidChecks('live');
-    if(!S.liveGraphKeys.length) S.liveGraphKeys=defaultGraphKeys();
+    S.liveGraphKeys=[];
     syncGraphChecks('live');
-    await loadLiveGraph();
+    setGraphEmpty('live',true);
+    await loadLiveMap(true);
   }
 }
 function renderLive(){
@@ -358,15 +387,13 @@ function renderLive(){
   var pids=normalizePidObject(safeJson(l.LATEST_PID_JSON,{})||{});
   var pt=normalizePidObject(safeJson(l.PID_TIME_JSON,{})||{});
   var profile=text(l.PROFILE_NAME||d.LAST_PROFILE||'Tanpa profile');
-  $('vehicleMeta').textContent='Profile: '+profile+' · Device: '+S.deviceId+' · Session: '+text(l.SESSION_ID||'-');
+  if($('vehicleMeta')) $('vehicleMeta').textContent='';
 
   var status=liveLabel(l);
   $('liveStatus').innerHTML=
     '<span class="status-dot '+(status==='LIVE'?'live':'offline')+'"></span>'+
     '<strong>'+status+'</strong>'+
-    '<span class="badge">Data '+htmlEscape(ageText(ms(l.LAST_RECEIVED)))+'</span>'+
-    '<span class="badge">Session '+htmlEscape(text(l.SESSION_ID||'-'))+'</span>'+
-    '<span class="badge">Mirror '+htmlEscape(fmtTime(ms(l.UPDATED_AT||l.LAST_RECEIVED)))+'</span>';
+    '<span class="badge">Data '+htmlEscape(ageText(ms(l.LAST_RECEIVED)))+'</span>';
 
   if(!S.cardKeys.length) S.cardKeys=defaultCardKeys(pids);
   renderSensorCards($('liveCards'),pids,pt,S.cardKeys);
@@ -382,13 +409,7 @@ function defaultCardKeys(pids){
   if(!keys.length) keys=Object.keys(pids).filter(isPidKey).slice(0,6);
   return keys.slice(0,12);
 }
-function defaultGraphKeys(){
-  var p=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
-  var wanted=['kc','kd','k5','k11'];
-  var out=wanted.filter(function(k){return p[k]!==undefined;});
-  if(!out.length) out=Object.keys(p).filter(isPidKey).slice(0,1);
-  return out.slice(0,MAX_COMPARE);
-}
+function defaultGraphKeys(){ return []; }
 function isPidKey(k){ return /^k/i.test(k) && String(k).toLowerCase().indexOf('kff1005')!==0 && String(k).toLowerCase().indexOf('kff1006')!==0; }
 function normalizePidObject(obj){
   var out={};
@@ -450,8 +471,7 @@ function renderSensorCards(container,pids,pidTimes,keys){
     var div=document.createElement('div'); div.className='sensor-card';
     div.innerHTML='<div class="sensor-name">'+htmlEscape(m.name)+'</div>'+
       '<div class="sensor-value">'+(v===null?'N/A':fmtNumber(v,m.precision))+
-      (m.unit?'<span class="sensor-unit">'+htmlEscape(m.unit)+'</span>':'')+'</div>'+
-      '<div class="sensor-age">'+htmlEscape(t?ageText(t):'timestamp N/A')+'</div>';
+      (m.unit?'<span class="sensor-unit">'+htmlEscape(m.unit)+'</span>':'')+'</div>';
     container.appendChild(div);
   });
 }
@@ -472,8 +492,13 @@ async function loadPrefs(){
   var p=await dbFetch('dashboard/prefs/'+safeKey(S.uid)+'/'+safeKey(S.deviceId));
   if(p && Array.isArray(p.cardKeys) && p.cardKeys.length){
     S.cardKeys=p.cardKeys;
-    if(S.live) renderLive();
   }
+  if(p && Array.isArray(p.historySummaryKeys)){
+    S.historySummaryKeys=p.historySummaryKeys.filter(function(k){return !!HISTORY_SUMMARY_FIELDS[k];});
+  }
+  if(!S.historySummaryKeys.length) S.historySummaryKeys=DEFAULT_HISTORY_SUMMARY_KEYS.slice();
+  if(S.live) renderLive();
+  if(S.historySession) renderHistorySummary(S.historySession);
 }
 function openDisplayPrefs(){
   var pids=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
@@ -498,8 +523,60 @@ async function savePrefs(){
   var rows=[].slice.call(document.querySelectorAll('#displayPrefsList .pref-row'));
   var keys=rows.filter(function(r){return r.querySelector('input').checked;}).map(function(r){return r.dataset.key;});
   S.cardKeys=keys.slice(0,20);
-  await dbPut('dashboard/prefs/'+safeKey(S.uid)+'/'+safeKey(S.deviceId),{cardKeys:S.cardKeys,updatedAt:Date.now()});
-  $('displayDialog').close(); renderLive(); toast('Tampilan disimpan');
+  var base='dashboard/prefs/'+safeKey(S.uid)+'/'+safeKey(S.deviceId);
+  await dbPut(base+'/cardKeys',S.cardKeys);
+  await dbPut(base+'/updatedAt',Date.now());
+  $('displayDialog').close(); renderLive(); toast('Tampilan LIVE disimpan');
+}
+
+
+function historySummaryValue(key,r){
+  var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED);
+  var end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
+  switch(key){
+    case 'start': return fmtDateTime(start);
+    case 'end': return fmtDateTime(end);
+    case 'duration': return fmtDuration(Math.max(0,end-start));
+    case 'distance': return fmtNumber(r.TRIP_DISTANCE_KM,1)+' km';
+    case 'tripKpl': return fmtNumber(r.TRIP_KPL,2)+' km/L';
+    case 'maxSpeed': return fmtNumber(r.MAX_SPEED_KMH,1)+' km/h';
+    case 'maxRpm': return fmtNumber(r.MAX_RPM,0)+' rpm';
+    case 'maxCoolant': return fmtNumber(r.MAX_COOLANT_C,1)+' °C';
+    case 'minVolts': return fmtNumber(r.MIN_VOLTS_CM,2)+' V';
+    case 'maxVolts': return fmtNumber(r.MAX_VOLTS_CM,2)+' V';
+    case 'packet': return fmtNumber(r.PACKET_COUNT,0);
+    case 'gpsValid': return fmtNumber(r.GPS_VALID_COUNT,0);
+    case 'longestGap': return fmtNumber(r.LONGEST_GAP_SEC,1)+' dtk';
+    default: return 'N/A';
+  }
+}
+function openHistoryDisplayPrefs(){
+  var selected={};
+  S.historySummaryKeys.forEach(function(k,i){selected[k]=i+1;});
+  var ordered=S.historySummaryKeys.concat(
+    Object.keys(HISTORY_SUMMARY_FIELDS).filter(function(k){return !selected[k];})
+  );
+  $('historyDisplayPrefsList').innerHTML=ordered.map(function(k){
+    var f=HISTORY_SUMMARY_FIELDS[k];
+    return '<div class="pref-row" data-key="'+htmlEscape(k)+'">'+
+      '<input type="checkbox" '+(selected[k]?'checked':'')+'>'+
+      '<div><strong>'+htmlEscape(f.label)+'</strong></div>'+
+      '<button type="button" class="ghost hist-pref-up">↑</button>'+
+      '<button type="button" class="ghost hist-pref-down">↓</button></div>';
+  }).join('');
+  $('historyDisplayDialog').showModal();
+}
+async function saveHistoryDisplayPrefs(){
+  var rows=[].slice.call(document.querySelectorAll('#historyDisplayPrefsList .pref-row'));
+  var keys=rows.filter(function(r){return r.querySelector('input').checked;})
+    .map(function(r){return r.dataset.key;});
+  S.historySummaryKeys=keys;
+  var base='dashboard/prefs/'+safeKey(S.uid)+'/'+safeKey(S.deviceId);
+  await dbPut(base+'/historySummaryKeys',S.historySummaryKeys);
+  await dbPut(base+'/updatedAt',Date.now());
+  $('historyDisplayDialog').close();
+  if(S.historySession)renderHistorySummary(S.historySession);
+  toast('Tampilan detail riwayat disimpan');
 }
 
 /* =========================== TELEMETRY LOAD =========================== */
@@ -559,6 +636,18 @@ function currentSessionBounds(){
   return {start:start,end:last||Date.now()};
 }
 
+
+function setGraphEmpty(context,empty){
+  var emptyId=context==='live'?'liveGraphEmpty':'historyGraphEmpty';
+  var wrapId=context==='live'?'liveChartWrap':'historyChartWrap';
+  if(empty){
+    show(emptyId); hide(wrapId);
+    if(S.charts[context]){S.charts[context].destroy();S.charts[context]=null;}
+  }else{
+    hide(emptyId); show(wrapId);
+  }
+}
+
 /* =========================== GRAPH =========================== */
 
 function buildGraphPidChecks(context){
@@ -567,7 +656,7 @@ function buildGraphPidChecks(context){
   if(context==='live') pids=normalizePidObject(safeJson(S.live && S.live.LATEST_PID_JSON,{})||{});
   else if(S.historySession) {
     var keys=safeJson(S.historySession.PID_KEYS_JSON,[]);
-    keys.forEach(function(k){pids[k]=1;});
+    keys.forEach(function(k){pids[String(k).toLowerCase()]=1;});
   }
   var keys=Object.keys(pids).filter(isPidKey).sort(function(a,b){return metaFor(a).sort-metaFor(b).sort;});
   target.innerHTML=keys.map(function(k){
@@ -585,20 +674,40 @@ function handlePidCheck(context,cb){
   var k=cb.dataset.key;
   if(cb.checked){
     if(arr.indexOf(k)<0 && arr.length<MAX_COMPARE) arr.push(k);
-    else if(arr.length>=MAX_COMPARE){cb.checked=false;toast('Maksimal '+MAX_COMPARE+' PID');}
+    else if(arr.length>=MAX_COMPARE){cb.checked=false;toast('Maksimal '+MAX_COMPARE+' sensor grafik');}
   }else arr=arr.filter(function(x){return x!==k;});
   if(context==='live') S.liveGraphKeys=arr; else S.historyGraphKeys=arr;
   if(context==='live') loadLiveGraph(); else loadHistoryGraph();
 }
 function chartOptions(context){
   return {
-    responsive:true,maintainAspectRatio:false,animation:false,parsing:false,
+    responsive:true,
+    maintainAspectRatio:false,
+    animation:false,
+    parsing:false,
     interaction:{mode:'nearest',intersect:false},
     plugins:{
       legend:{labels:{color:'#d9e5ef',boxWidth:10}},
-      tooltip:{callbacks:{
-        title:function(items){return items.length?fmtDateTime(items[0].parsed.x):'';}
-      }},
+      tooltip:{
+        enabled:true,
+        mode:'nearest',
+        intersect:false,
+        callbacks:{
+          title:function(items){
+            return items.length?fmtDateTime(items[0].parsed.x):'';
+          },
+          label:function(item){
+            var ds=item.dataset||{};
+            var point=(ds.data&&ds.data[item.dataIndex])||{};
+            var raw=(point&&point._raw!==undefined)?point._raw:item.parsed.y;
+            var key=ds._pidKey||'';
+            var m=key?metaFor(key):null;
+            var label=ds.label||'Sensor';
+            var unit=m&&m.unit?(' '+m.unit):'';
+            return label+': '+fmtNumber(raw,m?m.precision:null)+unit;
+          }
+        }
+      },
       zoom:{
         pan:{enabled:true,mode:'x'},
         zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'}
@@ -609,31 +718,77 @@ function chartOptions(context){
       y:{ticks:{color:'#8fa1b2'},grid:{color:'rgba(120,150,180,.12)'}}
     },
     onClick:function(evt,elements,chart){
+      // Desktop tetap memakai hover. Di ponsel, satu tap harus menampilkan
+      // tooltip secara persisten dan TRACE memilih timestamp yang sama.
+      var active=elements&&elements.length?elements:null;
+      if(!active || !active.length){
+        try{
+          active=chart.getElementsAtEventForMode(
+            evt.native||evt,
+            'nearest',
+            {intersect:false},
+            false
+          );
+        }catch(e){ active=[]; }
+      }
+
       var x=chart.scales.x.getValueForPixel(evt.x);
+
+      if(active && active.length){
+        var a=active[0];
+        chart.setActiveElements([{datasetIndex:a.datasetIndex,index:a.index}]);
+        if(chart.tooltip && chart.tooltip.setActiveElements){
+          chart.tooltip.setActiveElements(
+            [{datasetIndex:a.datasetIndex,index:a.index}],
+            {x:evt.x,y:evt.y}
+          );
+        }
+        var ds=chart.data.datasets[a.datasetIndex];
+        var pt=ds&&ds.data?ds.data[a.index]:null;
+        if(pt && Number.isFinite(Number(pt.x))) x=Number(pt.x);
+        chart.update('none');
+      }
+
       if(context==='live') traceLiveAt(x); else traceHistoryAt(x);
     }
   };
 }
 function makeDatasets(packets,keys,from,to,normalized){
-  var datasets=[], stats=[];
-  keys.forEach(function(k,idx){
+  var datasets=[];
+  keys.forEach(function(k){
     var pts=pointsForKey(packets,k,from,to);
     if(!pts.length) return;
+
     var vals=pts.map(function(p){return p.y;});
-    var min=Math.min.apply(null,vals),max=Math.max.apply(null,vals),avg=vals.reduce(function(a,b){return a+b;},0)/vals.length;
+    var min=Math.min.apply(null,vals);
+    var max=Math.max.apply(null,vals);
     var plotted=pts;
+
     if(normalized){
       var span=max-min;
-      plotted=pts.map(function(p){return {x:p.x,y:span?((p.y-min)/span*100):50,_raw:p.y,packet:p.packet};});
+      plotted=pts.map(function(p){
+        return {
+          x:p.x,
+          y:span?((p.y-min)/span*100):50,
+          _raw:p.y,
+          packet:p.packet
+        };
+      });
     }
+
     datasets.push({
       label:metaFor(k).short+(normalized?' (norm)':''),
+      _pidKey:k,
       data:downsample(plotted,900),
-      borderWidth:1.8,pointRadius:0,pointHoverRadius:4,spanGaps:false,tension:0.12
+      borderWidth:1.8,
+      pointRadius:0,
+      pointHoverRadius:5,
+      hitRadius:16,
+      spanGaps:false,
+      tension:0.12
     });
-    stats.push({key:k,min:min,max:max,avg:avg,count:vals.length});
   });
-  return {datasets:datasets,stats:stats};
+  return {datasets:datasets};
 }
 function downsample(arr,maxPts){
   if(arr.length<=maxPts) return arr;
@@ -650,16 +805,10 @@ function downsample(arr,maxPts){
   out.sort(function(a,b){return a.x-b.x;});
   return out;
 }
-function renderStats(id,stats){
-  $(id).innerHTML=stats.map(function(s){
-    var m=metaFor(s.key);
-    return '<div class="stat"><span>'+htmlEscape(m.short)+'</span><strong>'+
-      'Min '+fmtNumber(s.min,m.precision)+(m.unit?' '+htmlEscape(m.unit):'')+'</strong>'+
-      '<div>Avg '+fmtNumber(s.avg,m.precision)+' · Max '+fmtNumber(s.max,m.precision)+'</div></div>';
-  }).join('');
-}
 function renderChart(context,datasets,from,to,normalized){
   var id=context==='live'?'liveChart':'historyChart', canvas=$(id);
+  if(!datasets || !datasets.length){setGraphEmpty(context,true);return;}
+  setGraphEmpty(context,false);
   if(S.charts[context]) S.charts[context].destroy();
   var opts=chartOptions(context);
   if(normalized){
@@ -670,7 +819,12 @@ function renderChart(context,datasets,from,to,normalized){
   S.charts[context]=new Chart(canvas.getContext('2d'),{type:'line',data:{datasets:datasets},options:opts});
 }
 async function loadLiveGraph(){
-  if(!S.deviceId || !S.live || !S.liveGraphKeys.length) return;
+  if(!S.deviceId || !S.live)return;
+  if(!S.liveGraphKeys.length){
+    setGraphEmpty('live',true);
+    $('graphSubtitle').textContent='Pilih sensor untuk menampilkan grafik';
+    return;
+  }
   show('liveGraphLoading');
   try{
     var last=ms(S.live.LAST_TORQUE_TIME||S.live.LAST_RECEIVED)||Date.now();
@@ -682,12 +836,31 @@ async function loadLiveGraph(){
     var bounds=currentSessionBounds();
     var packets=await loadSessionTelemetry(S.deviceId,text(S.live.SESSION_ID),Math.min(bounds.start,from),Math.max(bounds.end,to),true);
     var data=makeDatasets(packets,S.liveGraphKeys,from,to,$('normalizeLive').checked);
-    renderStats('liveStats',data.stats);
     renderChart('live',data.datasets,from,to,$('normalizeLive').checked);
     $('graphSubtitle').textContent=fmtDateTime(from)+' → '+fmtDateTime(to);
     renderMap('live',packets,from,to);
   }catch(e){setError(e.message);toast('Grafik LIVE gagal: '+e.message);}
   finally{hide('liveGraphLoading');}
+}
+
+
+async function loadLiveMap(force){
+  if(!S.deviceId || !S.live)return;
+  ensureMap('live');
+  var last=ms(S.live.LAST_TORQUE_TIME||S.live.LAST_RECEIVED)||Date.now();
+  var from=last-Number(S.liveRangeMinutes||10)*60000;
+  try{
+    var packets=await loadSessionTelemetry(
+      S.deviceId,
+      text(S.live.SESSION_ID),
+      from,
+      last,
+      !!force
+    );
+    renderMap('live',packets,from,last);
+  }catch(e){
+    setError(e.message);
+  }
 }
 
 /* =========================== TRACE =========================== */
@@ -820,6 +993,17 @@ function updateLiveVehicleFromState(live){
   // Map dibuat lazy; bila sudah ada, marker kendaraan langsung diperbarui.
   if(S.maps.live && S.mapReady.live){
     ensureVehicleMarker(g);
+
+    if(!S.routeData.live) S.routeData.live={coords:[],last:g};
+    var coords=S.routeData.live.coords||[];
+    var prev=coords.length?coords[coords.length-1]:null;
+    if(!prev || Math.abs(prev[0]-g.lon)>0.000001 || Math.abs(prev[1]-g.lat)>0.000001){
+      coords.push([g.lon,g.lat]);
+      if(coords.length>2500)coords=coords.slice(-2500);
+      S.routeData.live={coords:coords,last:g};
+      applyRouteToMap('live',S.routeData.live);
+    }
+
     if(S.liveFollow && !S.liveTrace) centerOnLiveVehicle(false);
   }
 }
@@ -1048,6 +1232,12 @@ async function loadHistory(force){
   }catch(e){setError(e.message);toast('Riwayat gagal dimuat');}
   finally{hide('historyLoading');}
 }
+function friendlyHistoryStatus(v){
+  var s=text(v).toUpperCase();
+  if(s==='ACTIVE'||s==='LIVE')return 'Sedang berjalan';
+  if(s==='FINALIZED'||s==='INACTIVE'||s==='OFFLINE')return 'Selesai';
+  return s ? s.charAt(0)+s.slice(1).toLowerCase() : 'Selesai';
+}
 function renderHistoryList(){
   var from=$('historyFromDate').value?new Date($('historyFromDate').value+'T00:00:00').getTime():0;
   var to=$('historyToDate').value?new Date($('historyToDate').value+'T23:59:59').getTime():Infinity;
@@ -1063,11 +1253,11 @@ function renderHistoryList(){
     return '<article class="history-card">'+
       '<div class="history-card-head"><div><div class="history-card-title">'+htmlEscape(profile)+'</div>'+
       '<div class="muted">'+htmlEscape(fmtDateTime(start))+' · '+htmlEscape(fmtDuration(end-start))+'</div></div>'+
-      '<span class="badge">'+htmlEscape(text(r.STATUS||'FINALIZED'))+'</span></div>'+
+      '<span class="badge">'+htmlEscape(friendlyHistoryStatus(r.STATUS||'FINALIZED'))+'</span></div>'+
       '<div class="history-kpis">'+
       kpi('Jarak',fmtNumber(r.TRIP_DISTANCE_KM,1)+' km')+
-      kpi('Trip KPL',fmtNumber(r.TRIP_KPL,1))+
-      kpi('Max RPM',fmtNumber(r.MAX_RPM,0))+
+      kpi('Rata-rata BBM',fmtNumber(r.TRIP_KPL,1)+' km/L')+
+      kpi('RPM Maks',fmtNumber(r.MAX_RPM,0))+
       kpi('Max Suhu',fmtNumber(r.MAX_COOLANT_C,1)+' °C')+
       '</div><button type="button" class="primary history-open" data-session-key="'+htmlEscape(text(r._id))+'">Lihat Detail</button></article>';
   }).join('');
@@ -1102,12 +1292,13 @@ async function openHistorySession(sessionKey){
   $('historyDetailTitle').textContent='Detail Perjalanan';
   var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED);
   var end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
-  $('historyDetailSub').textContent=fmtDateTime(start)+' → '+fmtDateTime(end)+' · Session '+sessionId;
+  $('historyDetailSub').textContent=fmtDateTime(start)+' → '+fmtDateTime(end);
   renderHistorySummary(r);
 
   buildGraphPidChecks('history');
-  S.historyGraphKeys=defaultHistoryGraphKeys(r);
+  S.historyGraphKeys=[];
   syncGraphChecks('history');
+  setGraphEmpty('history',true);
 
   try{
     await loadHistoryGraph(true);
@@ -1124,23 +1315,17 @@ async function openHistorySession(sessionKey){
     if(S.maps.history) S.maps.history.resize();
   },50);
 }
-function defaultHistoryGraphKeys(r){
-  var keys=safeJson(r.PID_KEYS_JSON,[])||[];
-  var wanted=['kc','kd','k5','k11'];
-  var out=wanted.filter(function(k){return keys.indexOf(k)>=0;});
-  if(!out.length) out=keys.filter(isPidKey).slice(0,1);
-  return out.slice(0,MAX_COMPARE);
-}
+function defaultHistoryGraphKeys(r){ return []; }
 function renderHistorySummary(r){
-  var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED),end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
-  var items=[
-    ['Mulai',fmtDateTime(start)],['Selesai',fmtDateTime(end)],['Durasi',fmtDuration(end-start)],
-    ['Jarak',fmtNumber(r.TRIP_DISTANCE_KM,2)+' km'],['Trip KPL',fmtNumber(r.TRIP_KPL,2)+' km/L'],
-    ['Max Speed',fmtNumber(r.MAX_SPEED_KMH,1)+' km/h'],['Max RPM',fmtNumber(r.MAX_RPM,0)+' rpm'],
-    ['Max Coolant',fmtNumber(r.MAX_COOLANT_C,1)+' °C'],['Packet',fmtNumber(r.PACKET_COUNT,0)],
-    ['GPS valid',fmtNumber(r.GPS_VALID_COUNT,0)],['Gap terpanjang',fmtNumber(r.LONGEST_GAP_SEC,1)+' dtk']
-  ];
-  $('historySummary').innerHTML=items.map(function(x){return '<div class="summary-item"><span>'+htmlEscape(x[0])+'</span><strong>'+htmlEscape(x[1])+'</strong></div>';}).join('');
+  var keys=(S.historySummaryKeys&&S.historySummaryKeys.length)
+    ? S.historySummaryKeys
+    : DEFAULT_HISTORY_SUMMARY_KEYS;
+  $('historySummary').innerHTML=keys.map(function(k){
+    var f=HISTORY_SUMMARY_FIELDS[k];
+    if(!f)return '';
+    return '<div class="summary-item"><span>'+htmlEscape(f.label)+'</span><strong>'+
+      htmlEscape(historySummaryValue(k,r))+'</strong></div>';
+  }).join('');
 }
 function historyRangeBounds(){
   var r=S.historySession, start=ms(r.START_TORQUE_TIME||r.START_RECEIVED),end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
@@ -1179,7 +1364,6 @@ async function loadHistoryGraph(force){
         b.to,
         $('normalizeHistory').checked
       );
-      renderStats('historyStats',data.stats);
       renderChart(
         'history',
         data.datasets,
@@ -1187,13 +1371,12 @@ async function loadHistoryGraph(force){
         b.to,
         $('normalizeHistory').checked
       );
+      $('historyGraphSubtitle').textContent=
+        fmtDateTime(b.from)+' → '+fmtDateTime(b.to);
     }else{
-      $('historyStats').innerHTML='';
+      setGraphEmpty('history',true);
+      $('historyGraphSubtitle').textContent='Pilih sensor untuk menampilkan grafik';
     }
-
-    $('historyGraphSubtitle').textContent=
-      fmtDateTime(b.from)+' → '+fmtDateTime(b.to)+
-      ' · '+packets.length+' packet Firebase';
 
     // Peta History selalu memakai seluruh packet session.
     var mapFrom=packets.length ? packets[0]._time : start;
@@ -1259,12 +1442,25 @@ function bind(){
   $('liveTabBtn').addEventListener('click',function(){showTab('live');});
   $('historyTabBtn').addEventListener('click',function(){showHistory();});
   $('displaySettingsBtn').addEventListener('click',openDisplayPrefs);
+  $('historyDisplaySettingsBtn').addEventListener('click',openHistoryDisplayPrefs);
   $('displayPrefsList').addEventListener('click',function(e){
     if(e.target.classList.contains('pref-up'))movePrefRow(e.target,-1);
     if(e.target.classList.contains('pref-down'))movePrefRow(e.target,1);
   });
   $('saveDisplayPrefs').addEventListener('click',function(){savePrefs().catch(function(e){setError(e.message);toast(e.message);});});
-  $('resetDisplayPrefs').addEventListener('click',function(){S.cardKeys=[];if(S.live)S.cardKeys=defaultCardKeys(safeJson(S.live.LATEST_PID_JSON,{})||{});openDisplayPrefs();});
+  $('resetDisplayPrefs').addEventListener('click',function(){S.cardKeys=[];if(S.live)S.cardKeys=defaultCardKeys(normalizePidObject(safeJson(S.live.LATEST_PID_JSON,{})||{}));openDisplayPrefs();});
+
+  $('historyDisplayPrefsList').addEventListener('click',function(e){
+    if(e.target.classList.contains('hist-pref-up'))movePrefRow(e.target,-1);
+    if(e.target.classList.contains('hist-pref-down'))movePrefRow(e.target,1);
+  });
+  $('saveHistoryDisplayPrefs').addEventListener('click',function(){
+    saveHistoryDisplayPrefs().catch(function(e){setError(e.message);toast(e.message);});
+  });
+  $('resetHistoryDisplayPrefs').addEventListener('click',function(){
+    S.historySummaryKeys=DEFAULT_HISTORY_SUMMARY_KEYS.slice();
+    openHistoryDisplayPrefs();
+  });
 
   $('livePidChecks').addEventListener('change',function(e){if(e.target.matches('input[type=checkbox]'))handlePidCheck('live',e.target);});
   $('historyPidChecks').addEventListener('change',function(e){if(e.target.matches('input[type=checkbox]'))handlePidCheck('history',e.target);});
