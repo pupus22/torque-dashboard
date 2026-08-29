@@ -11,7 +11,7 @@
  * Firebase hanya mirror/cache untuk dashboard GitHub baru.
  */
 
-var BRIDGE_VERSION = '1.1.0';
+var BRIDGE_VERSION = '1.2.0 ROUTE-FIX';
 var SPREADSHEET_ID = '1Hm-t595SCY2gI0gQX228AX0CfCz-mMyW4W5MEES8W4Q';
 var TZ = 'Asia/Jakarta';
 
@@ -247,11 +247,34 @@ function syncRawIncremental_(ss, maxRows) {
   var count = Math.min(maxRows || MAX_RAW_ROWS_PER_RUN, lastRow - lastSynced);
   var values = sh.getRange(startRow, 1, count, 9).getValues();
 
-  // Group menjadi:
-  // mirror/telemetry/YYYY-MM-DD/DEVICE_ID/SESSION_ID/{TORQUE_MS_HASH}
-  var grouped = {};
+  var writeResult = writeTelemetryRows_(values, startRow);
 
-  values.forEach(function(r, idx) {
+  var newLast = startRow + count - 1;
+  props.setProperty('RAW_LAST_ROW', String(newLast));
+
+  return {
+    ok:true,
+    startRow:startRow,
+    count:count,
+    packetWrites:writeResult.packetWrites,
+    sessionPatches:writeResult.sessionPatches,
+    lastSyncedRow:newLast,
+    sourceLastRow:lastRow,
+    remainingRawRows:Math.max(0, lastRow - newLast)
+  };
+}
+
+/**
+ * Menulis RAW rows ke Firebase dengan PATCH pada LEVEL SESSION.
+ *
+ * PATCH di level tanggal akan mengganti subtree DEVICE dengan batch terbaru.
+ * Itu yang membuat packet lama / rute trip hilang.
+ */
+function writeTelemetryRows_(values, startRow) {
+  var grouped = {};
+  var packetWrites = 0;
+
+  (values || []).forEach(function(r, idx) {
     var receivedAt = ms_(r[0]);
     var torqueTime = ms_(r[1]);
     var deviceId = safeKey_(r[2]);
@@ -269,7 +292,9 @@ function syncRawIncremental_(ss, maxRows) {
     if (!grouped[dateKey][deviceId]) grouped[dateKey][deviceId] = {};
     if (!grouped[dateKey][deviceId][sessionId]) grouped[dateKey][deviceId][sessionId] = {};
 
-    var packetKey = String(torqueTime) + '_' + safeKey_(packetHash.substring(0, 12) || String(startRow + idx));
+    var packetKey = String(torqueTime) + '_' +
+      safeKey_(packetHash.substring(0, 12) || String(startRow + idx));
+
     grouped[dateKey][deviceId][sessionId][packetKey] = {
       receivedAt: receivedAt,
       torqueTime: torqueTime,
@@ -282,24 +307,84 @@ function syncRawIncremental_(ss, maxRows) {
       qualityFlags: qualityFlags,
       sourceRow: startRow + idx
     };
+    packetWrites++;
   });
 
-  // PATCH per tanggal supaya request tidak terlalu besar.
+  var sessionPatches = 0;
+
   Object.keys(grouped).forEach(function(dateKey) {
-    firebasePatch_('mirror/telemetry/' + dateKey, grouped[dateKey]);
+    Object.keys(grouped[dateKey]).forEach(function(deviceId) {
+      Object.keys(grouped[dateKey][deviceId]).forEach(function(sessionId) {
+        firebasePatch_(
+          'mirror/telemetry/' + dateKey + '/' + deviceId + '/' + sessionId,
+          grouped[dateKey][deviceId][sessionId]
+        );
+        sessionPatches++;
+      });
+    });
   });
 
-  var newLast = startRow + count - 1;
-  props.setProperty('RAW_LAST_ROW', String(newLast));
+  return {packetWrites:packetWrites, sessionPatches:sessionPatches};
+}
 
-  return {
-    ok:true,
-    startRow:startRow,
-    count:count,
-    lastSyncedRow:newLast,
-    sourceLastRow:lastRow,
-    remainingRawRows:Math.max(0, lastRow - newLast)
-  };
+/**
+ * Repair telemetry Firebase 14 hari dari RAW_LOG master.
+ * Jalankan BERULANG sampai done:true dan remainingRawRows:0.
+ * Cursor repair terpisah, jadi syncMinute normal tetap aman.
+ */
+function repairTelemetry14Days() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return {ok:false, skipped:'LOCKED'};
+
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sh = ss.getSheetByName(SHEETS.RAW);
+    if (!sh || sh.getLastRow() < 2) return {ok:true, done:true, remainingRawRows:0};
+
+    var props = PropertiesService.getScriptProperties();
+    var cursor = Number(props.getProperty('REPAIR_RAW_ROW') || 0);
+
+    if (!cursor) {
+      var firstRecent = findFirstRecentRawRow_(sh, RETENTION_DAYS);
+      cursor = Math.max(1, firstRecent - 1);
+      props.setProperty('REPAIR_RAW_ROW', String(cursor));
+    }
+
+    var lastRow = sh.getLastRow();
+    if (cursor >= lastRow) {
+      props.deleteProperty('REPAIR_RAW_ROW');
+      return {ok:true, done:true, lastRepairedRow:cursor, remainingRawRows:0};
+    }
+
+    var startRow = cursor + 1;
+    var count = Math.min(MAX_RAW_ROWS_PER_RUN, lastRow - cursor);
+    var values = sh.getRange(startRow, 1, count, 9).getValues();
+    var writeResult = writeTelemetryRows_(values, startRow);
+
+    var newCursor = startRow + count - 1;
+    var remaining = Math.max(0, lastRow - newCursor);
+    var done = remaining === 0;
+
+    if (done) props.deleteProperty('REPAIR_RAW_ROW');
+    else props.setProperty('REPAIR_RAW_ROW', String(newCursor));
+
+    var result = {
+      ok:true,
+      done:done,
+      startRow:startRow,
+      count:count,
+      packetWrites:writeResult.packetWrites,
+      sessionPatches:writeResult.sessionPatches,
+      lastRepairedRow:newCursor,
+      sourceLastRow:lastRow,
+      remainingRawRows:remaining
+    };
+
+    Logger.log(JSON.stringify(result));
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /* =========================== INITIAL 14 DAYS =========================== */

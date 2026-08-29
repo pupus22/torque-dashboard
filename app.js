@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.5.1 FRIENDLY PID FIX';
+var APP_VERSION = 'GitHub Firebase v1.5.2 ROUTE FIX';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -1151,20 +1151,63 @@ function historyRangeBounds(){
   return {from:Math.max(start,center-mins*30000),to:Math.min(end,center+mins*30000)};
 }
 async function loadHistoryGraph(force){
-  if(!S.historySession||!S.historyGraphKeys.length)return;
+  if(!S.historySession)return;
+
   show('historyGraphLoading');
   try{
-    var r=S.historySession,start=ms(r.START_TORQUE_TIME||r.START_RECEIVED),end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
-    var packets=await loadSessionTelemetry(S.deviceId,text(r.SESSION_ID),start,end,!!force);
+    var r=S.historySession;
+    var start=ms(r.START_TORQUE_TIME||r.START_RECEIVED);
+    var end=ms(r.LAST_TORQUE_TIME||r.LAST_RECEIVED);
+    var sessionId=text(r.SESSION_ID||r._firebaseKey);
+
+    var packets=await loadSessionTelemetry(
+      S.deviceId,
+      sessionId,
+      start,
+      end,
+      !!force
+    );
     S.historyTelemetry=packets;
+
     var b=historyRangeBounds();
-    var data=makeDatasets(packets,S.historyGraphKeys,b.from,b.to,$('normalizeHistory').checked);
-    renderStats('historyStats',data.stats);
-    renderChart('history',data.datasets,b.from,b.to,$('normalizeHistory').checked);
-    $('historyGraphSubtitle').textContent=fmtDateTime(b.from)+' → '+fmtDateTime(b.to);
-    renderMap('history',packets,start,end);
-  }catch(e){setError(e.message);toast('Grafik riwayat gagal: '+e.message);}
-  finally{hide('historyGraphLoading');}
+
+    if(S.historyGraphKeys.length){
+      var data=makeDatasets(
+        packets,
+        S.historyGraphKeys,
+        b.from,
+        b.to,
+        $('normalizeHistory').checked
+      );
+      renderStats('historyStats',data.stats);
+      renderChart(
+        'history',
+        data.datasets,
+        b.from,
+        b.to,
+        $('normalizeHistory').checked
+      );
+    }else{
+      $('historyStats').innerHTML='';
+    }
+
+    $('historyGraphSubtitle').textContent=
+      fmtDateTime(b.from)+' → '+fmtDateTime(b.to)+
+      ' · '+packets.length+' packet Firebase';
+
+    // Peta History selalu memakai seluruh packet session.
+    var mapFrom=packets.length ? packets[0]._time : start;
+    var mapTo=packets.length ? packets[packets.length-1]._time : end;
+    renderMap('history',packets,mapFrom,mapTo);
+
+  }catch(e){
+    setError(e.message);
+    $('historyDetailError').textContent=
+      'Telemetry/peta riwayat gagal dimuat: '+text(e.message||e);
+    toast('Riwayat gagal: '+e.message);
+  }finally{
+    hide('historyGraphLoading');
+  }
 }
 
 /* =========================== TABS / TIMERS =========================== */
