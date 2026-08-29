@@ -275,3 +275,27 @@ dialog::backdrop{background:rgba(0,0,0,.62)}
   .detail-actions button{flex:1}
   .graph-empty{min-height:160px}
 }
+
+
+/* ================= v1.5.5 DETAIL SENSOR ================= */
+.prefs-section-title{
+  margin:14px 0 7px;
+  font-weight:800;
+  color:var(--text);
+  font-size:13px;
+  letter-spacing:.02em;
+}
+.prefs-section-title:first-child{
+  margin-top:0;
+}
+.prefs-section-note{
+  margin:-2px 0 8px;
+  font-size:12px;
+}
+.history-pref-group{
+  display:grid;
+  gap:7px;
+}
+.summary-item.summary-sensor strong{
+  line-height:1.25;
+}

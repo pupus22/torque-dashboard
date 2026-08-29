@@ -2,7 +2,7 @@
 'use strict';
 
 var CFG = window.TORQUE_FIREBASE || {};
-var APP_VERSION = 'GitHub Firebase v1.5.4 GRAPH CLEAN';
+var APP_VERSION = 'GitHub Firebase v1.5.5 DETAIL SENSOR';
 var MAX_COMPARE = 4;
 var GPS_KEYS = {lat:'kff1006', lon:'kff1005', acc:'kff1239', bearing:'kff1007', speed:'kff1001'};
 var DEFAULT_KEYS = ['kd','kc','k5','kff1203','kff1206','k42'];
@@ -72,6 +72,106 @@ var HISTORY_SUMMARY_FIELDS = {
 var DEFAULT_HISTORY_SUMMARY_KEYS = [
   'start','end','duration','distance','tripKpl','maxSpeed','maxRpm','maxCoolant'
 ];
+
+var HISTORY_SENSOR_PREFIX='sensor:';
+
+function historySensorPrefKey(pidKey){
+  return HISTORY_SENSOR_PREFIX+text(pidKey).trim().toLowerCase();
+}
+function historySensorKeyFromPref(prefKey){
+  var s=text(prefKey);
+  return s.indexOf(HISTORY_SENSOR_PREFIX)===0 ? s.slice(HISTORY_SENSOR_PREFIX.length).toLowerCase() : '';
+}
+function validHistoryDisplayKey(k){
+  if(HISTORY_SUMMARY_FIELDS[k])return true;
+  var pid=historySensorKeyFromPref(k);
+  return !!pid && isPidKey(pid);
+}
+function historySessionSensorKeys(){
+  if(!S.historySession)return [];
+  var keys=safeJson(S.historySession.PID_KEYS_JSON,[])||[];
+  var seen={};
+  return keys.map(function(k){return text(k).toLowerCase();})
+    .filter(function(k){
+      if(!isPidKey(k)||seen[k])return false;
+      seen[k]=true;
+      return true;
+    })
+    .sort(function(a,b){return metaFor(a).sort-metaFor(b).sort;});
+}
+
+/**
+ * Pilih statistik yang paling bermakna untuk ringkasan satu angka.
+ * - Tegangan -> minimum
+ * - RPM / suhu / kecepatan / tekanan AC / output transmisi / boost -> maksimum
+ * - Nilai trip/kumulatif/estimasi -> nilai terakhir
+ * - Sensor kontinu lain -> rata-rata
+ */
+function historySensorStatMode(pidKey){
+  var k=text(pidKey).toLowerCase();
+  var m=metaFor(k);
+  var n=(m.name+' '+m.short).toLowerCase();
+
+  if(k==='k42' || k==='kff1238' || k==='k221141' || /tegangan|voltage/.test(n)){
+    return 'min';
+  }
+
+  if(
+    k==='kc' || k==='k5' || k==='kf' || k==='kd' || k==='kff1001' ||
+    k==='k221564' || k==='k221942' || k==='kff1202' ||
+    /rpm|suhu|temperature|kecepatan|max speed|tekanan ac|output transmisi|boost/.test(n)
+  ){
+    return 'max';
+  }
+
+  if(
+    k==='kff1204' || k==='kff1206' || k==='kff126a' ||
+    k==='kff1296' || k==='kff1297' || k==='kff1298' ||
+    /jarak perjalanan|jarak trip|trip kpl|rata-rata trip|estimasi jarak|berkendara kota|berkendara highway|persentase idle/.test(n)
+  ){
+    return 'last';
+  }
+
+  return 'avg';
+}
+function historyStatLabel(mode){
+  if(mode==='min')return 'Min';
+  if(mode==='max')return 'Maks';
+  if(mode==='last')return 'Akhir';
+  return 'Rata-rata';
+}
+function historySensorStat(pidKey){
+  var k=text(pidKey).toLowerCase();
+  var packets=S.historyTelemetry||[];
+  var vals=[];
+
+  packets.forEach(function(p){
+    var q=normalizePidObject((p&&p._payload)||{});
+    if(!Object.prototype.hasOwnProperty.call(q,k))return;
+    var v=validPidValue(k,q[k]);
+    if(v!==null)vals.push(v);
+  });
+
+  var mode=historySensorStatMode(k);
+  if(!vals.length){
+    return {mode:mode,label:historyStatLabel(mode),value:null,count:0};
+  }
+
+  var value=null;
+  if(mode==='min') value=Math.min.apply(null,vals);
+  else if(mode==='max') value=Math.max.apply(null,vals);
+  else if(mode==='last') value=vals[vals.length-1];
+  else value=vals.reduce(function(a,b){return a+b;},0)/vals.length;
+
+  return {mode:mode,label:historyStatLabel(mode),value:value,count:vals.length};
+}
+function historySensorDisplayValue(pidKey){
+  var m=metaFor(pidKey);
+  var stat=historySensorStat(pidKey);
+  if(!S.historyTelemetry)return 'Memuat...';
+  if(stat.value===null)return stat.label+' N/A';
+  return stat.label+' '+fmtNumber(stat.value,m.precision)+(m.unit?' '+m.unit:'');
+}
 
 
 var S = {
@@ -494,7 +594,7 @@ async function loadPrefs(){
     S.cardKeys=p.cardKeys;
   }
   if(p && Array.isArray(p.historySummaryKeys)){
-    S.historySummaryKeys=p.historySummaryKeys.filter(function(k){return !!HISTORY_SUMMARY_FIELDS[k];});
+    S.historySummaryKeys=p.historySummaryKeys.filter(validHistoryDisplayKey);
   }
   if(!S.historySummaryKeys.length) S.historySummaryKeys=DEFAULT_HISTORY_SUMMARY_KEYS.slice();
   if(S.live) renderLive();
@@ -553,28 +653,79 @@ function historySummaryValue(key,r){
 function openHistoryDisplayPrefs(){
   var selected={};
   S.historySummaryKeys.forEach(function(k,i){selected[k]=i+1;});
-  var ordered=S.historySummaryKeys.concat(
+
+  var fixedSelected=S.historySummaryKeys.filter(function(k){return !!HISTORY_SUMMARY_FIELDS[k];});
+  var fixedOrdered=fixedSelected.concat(
     Object.keys(HISTORY_SUMMARY_FIELDS).filter(function(k){return !selected[k];})
   );
-  $('historyDisplayPrefsList').innerHTML=ordered.map(function(k){
+
+  var sensorKeys=historySessionSensorKeys();
+  var sensorPrefKeys=sensorKeys.map(historySensorPrefKey);
+  var sensorSelected=S.historySummaryKeys.filter(function(k){
+    return historySensorKeyFromPref(k) && sensorPrefKeys.indexOf(k)>=0;
+  });
+  var sensorOrdered=sensorSelected.concat(
+    sensorPrefKeys.filter(function(k){return !selected[k];})
+  );
+
+  function fixedRow(k){
     var f=HISTORY_SUMMARY_FIELDS[k];
-    return '<div class="pref-row" data-key="'+htmlEscape(k)+'">'+
+    return '<div class="pref-row history-pref-row" data-group="summary" data-key="'+htmlEscape(k)+'">'+
       '<input type="checkbox" '+(selected[k]?'checked':'')+'>'+
       '<div><strong>'+htmlEscape(f.label)+'</strong></div>'+
       '<button type="button" class="ghost hist-pref-up">↑</button>'+
       '<button type="button" class="ghost hist-pref-down">↓</button></div>';
-  }).join('');
+  }
+
+  function sensorRow(prefKey){
+    var pid=historySensorKeyFromPref(prefKey);
+    var m=metaFor(pid);
+    var mode=historySensorStatMode(pid);
+    return '<div class="pref-row history-pref-row" data-group="sensor" data-key="'+htmlEscape(prefKey)+'">'+
+      '<input type="checkbox" '+(selected[prefKey]?'checked':'')+'>'+
+      '<div><strong>'+htmlEscape(m.name)+'</strong>'+
+      '<div class="muted">'+htmlEscape(historyStatLabel(mode)+(m.unit?' · '+m.unit:''))+'</div></div>'+
+      '<button type="button" class="ghost hist-pref-up">↑</button>'+
+      '<button type="button" class="ghost hist-pref-down">↓</button></div>';
+  }
+
+  var html=
+    '<div class="prefs-section-title">Ringkasan Perjalanan</div>'+
+    '<div class="history-pref-group" data-pref-group="summary">'+fixedOrdered.map(fixedRow).join('')+'</div>'+
+    '<div class="prefs-section-title">Sensor Perjalanan</div>'+
+    '<div class="muted prefs-section-note">Pilihan sensor mengikuti sensor yang tersedia pada session ini.</div>'+
+    '<div class="history-pref-group" data-pref-group="sensor">'+
+      (sensorOrdered.length?sensorOrdered.map(sensorRow).join(''):'<div class="muted">Sensor session belum tersedia.</div>')+
+    '</div>';
+
+  $('historyDisplayPrefsList').innerHTML=html;
   $('historyDisplayDialog').showModal();
 }
+function moveHistoryPrefRow(btn,dir){
+  var row=btn.closest('.history-pref-row');
+  if(!row)return;
+  var group=row.parentNode;
+  if(dir<0 && row.previousElementSibling && row.previousElementSibling.classList.contains('history-pref-row')){
+    group.insertBefore(row,row.previousElementSibling);
+  }
+  if(dir>0 && row.nextElementSibling && row.nextElementSibling.classList.contains('history-pref-row')){
+    group.insertBefore(row.nextElementSibling,row);
+  }
+}
 async function saveHistoryDisplayPrefs(){
-  var rows=[].slice.call(document.querySelectorAll('#historyDisplayPrefsList .pref-row'));
-  var keys=rows.filter(function(r){return r.querySelector('input').checked;})
+  var summaryRows=[].slice.call(document.querySelectorAll('#historyDisplayPrefsList [data-pref-group="summary"] .history-pref-row'));
+  var sensorRows=[].slice.call(document.querySelectorAll('#historyDisplayPrefsList [data-pref-group="sensor"] .history-pref-row'));
+
+  var keys=summaryRows.concat(sensorRows)
+    .filter(function(r){return r.querySelector('input') && r.querySelector('input').checked;})
     .map(function(r){return r.dataset.key;});
+
   S.historySummaryKeys=keys;
   var base='dashboard/prefs/'+safeKey(S.uid)+'/'+safeKey(S.deviceId);
   await dbPut(base+'/historySummaryKeys',S.historySummaryKeys);
   await dbPut(base+'/updatedAt',Date.now());
   $('historyDisplayDialog').close();
+
   if(S.historySession)renderHistorySummary(S.historySession);
   toast('Tampilan detail riwayat disimpan');
 }
@@ -1276,6 +1427,7 @@ async function openHistorySession(sessionKey){
 
   S.historySession=r;
   S.historySession._firebaseKey=sessionKey;
+  S.historyTelemetry=null;
   S.historyTrace=null;
   S.historyRange='whole';
   S.historyCustom=null;
@@ -1320,11 +1472,25 @@ function renderHistorySummary(r){
   var keys=(S.historySummaryKeys&&S.historySummaryKeys.length)
     ? S.historySummaryKeys
     : DEFAULT_HISTORY_SUMMARY_KEYS;
+
   $('historySummary').innerHTML=keys.map(function(k){
-    var f=HISTORY_SUMMARY_FIELDS[k];
-    if(!f)return '';
-    return '<div class="summary-item"><span>'+htmlEscape(f.label)+'</span><strong>'+
-      htmlEscape(historySummaryValue(k,r))+'</strong></div>';
+    var fixed=HISTORY_SUMMARY_FIELDS[k];
+    if(fixed){
+      return '<div class="summary-item"><span>'+htmlEscape(fixed.label)+'</span><strong>'+
+        htmlEscape(historySummaryValue(k,r))+'</strong></div>';
+    }
+
+    var pid=historySensorKeyFromPref(k);
+    if(pid){
+      // Jangan tampilkan sensor pilihan lama jika sensor tersebut tidak ada di session ini.
+      var available=historySessionSensorKeys();
+      if(available.indexOf(pid)<0)return '';
+      var m=metaFor(pid);
+      return '<div class="summary-item summary-sensor"><span>'+htmlEscape(m.name)+'</span><strong>'+
+        htmlEscape(historySensorDisplayValue(pid))+'</strong></div>';
+    }
+
+    return '';
   }).join('');
 }
 function historyRangeBounds(){
@@ -1353,6 +1519,7 @@ async function loadHistoryGraph(force){
       !!force
     );
     S.historyTelemetry=packets;
+    renderHistorySummary(r);
 
     var b=historyRangeBounds();
 
@@ -1451,8 +1618,8 @@ function bind(){
   $('resetDisplayPrefs').addEventListener('click',function(){S.cardKeys=[];if(S.live)S.cardKeys=defaultCardKeys(normalizePidObject(safeJson(S.live.LATEST_PID_JSON,{})||{}));openDisplayPrefs();});
 
   $('historyDisplayPrefsList').addEventListener('click',function(e){
-    if(e.target.classList.contains('hist-pref-up'))movePrefRow(e.target,-1);
-    if(e.target.classList.contains('hist-pref-down'))movePrefRow(e.target,1);
+    if(e.target.classList.contains('hist-pref-up'))moveHistoryPrefRow(e.target,-1);
+    if(e.target.classList.contains('hist-pref-down'))moveHistoryPrefRow(e.target,1);
   });
   $('saveHistoryDisplayPrefs').addEventListener('click',function(){
     saveHistoryDisplayPrefs().catch(function(e){setError(e.message);toast(e.message);});
